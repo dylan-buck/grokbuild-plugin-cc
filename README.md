@@ -328,12 +328,6 @@ Running Grok jobs for that Claude session are cancelled. **Finished** jobs stay 
 
 Grok’s `import` command is best-effort and may skip some Claude transcript shapes. The plugin always writes a handoff markdown file under `.grok-plugin-handoffs/` you can open with `grok --prompt-file …`.
 
-### How is this different from OpenAI’s Codex plugin?
-
-The user-facing shape matches [codex-plugin-cc](https://github.com/openai/codex-plugin-cc): slash commands, rescue subagent, job status/result/cancel, optional stop-time review gate, and session handoff.
-
-Under the hood, Codex talks to the Codex app-server protocol. Grok Build is driven through headless CLI mode (`grok -p --output-format json`) and native Grok session IDs for resume.
-
 ## Development
 
 ```bash
