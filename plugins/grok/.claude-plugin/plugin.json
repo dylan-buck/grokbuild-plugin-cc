@@ -3,6 +3,6 @@
   "version": "0.1.0",
   "description": "Use Grok Build from Claude Code to review code or delegate tasks.",
   "author": {
-    "name": "Community"
+    "name": "dylan-buck"
   }
 }

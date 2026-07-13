@@ -196,6 +196,33 @@ export function readOutputSchema(schemaPath) {
   return JSON.parse(fs.readFileSync(schemaPath, "utf8"));
 }
 
+/** Canonical Grok headless tool IDs (see user-guide/14-headless-mode.md). */
+export const GROK_TOOL_IDS = {
+  shell: "run_terminal_cmd",
+  edit: "search_replace",
+  webSearch: "web_search",
+  webFetch: "web_fetch",
+  agent: "Agent",
+  read: "read_file",
+  grep: "grep",
+  list: "list_dir"
+};
+
+/** Tools blocked for embedded-diff reviews (text-in/text-out). */
+export const REVIEW_DISALLOWED_TOOLS = [
+  GROK_TOOL_IDS.shell,
+  GROK_TOOL_IDS.edit,
+  GROK_TOOL_IDS.webSearch,
+  GROK_TOOL_IDS.webFetch,
+  GROK_TOOL_IDS.agent,
+  GROK_TOOL_IDS.read,
+  GROK_TOOL_IDS.grep,
+  GROK_TOOL_IDS.list
+].join(",");
+
+/** Tools blocked for read-only investigation tasks (no file edits). */
+export const READ_ONLY_DISALLOWED_TOOLS = [GROK_TOOL_IDS.edit].join(",");
+
 /**
  * Run a single headless Grok turn and return structured result.
  */
@@ -205,11 +232,20 @@ export function runHeadlessTurn(options = {}) {
     cwd = process.cwd(),
     model = null,
     effort = null,
+    // Prefer documented --always-approve; --yolo remains accepted by the CLI.
+    alwaysApprove = false,
     yolo = false,
     tools = null,
     disallowedTools = null,
     resumeSessionId = null,
     jsonSchema = null,
+    maxTurns = null,
+    noSubagents = false,
+    disableWebSearch = false,
+    worktree = null,
+    worktreeRef = null,
+    check = false,
+    bestOfN = null,
     extraArgs = [],
     env = process.env,
     onProgress = null,
@@ -230,8 +266,9 @@ export function runHeadlessTurn(options = {}) {
   const binary = availability.binary;
   const args = ["-p", String(prompt), "--output-format", "json", "--no-auto-update"];
 
-  if (yolo) {
-    args.push("--yolo");
+  if (alwaysApprove || yolo) {
+    // Documented flag in `grok --help`; --yolo is a compatible alias in current builds.
+    args.push("--always-approve");
   }
   if (model) {
     args.push("-m", String(model));
@@ -254,6 +291,29 @@ export function runHeadlessTurn(options = {}) {
   if (jsonSchema) {
     const schemaText = typeof jsonSchema === "string" ? jsonSchema : JSON.stringify(jsonSchema);
     args.push("--json-schema", schemaText);
+  }
+  if (maxTurns != null && Number(maxTurns) > 0) {
+    args.push("--max-turns", String(maxTurns));
+  }
+  if (noSubagents) {
+    args.push("--no-subagents");
+  }
+  if (disableWebSearch) {
+    args.push("--disable-web-search");
+  }
+  if (worktree === true) {
+    args.push("--worktree");
+  } else if (typeof worktree === "string" && worktree.trim()) {
+    args.push("--worktree", worktree.trim());
+  }
+  if (worktreeRef) {
+    args.push("--worktree-ref", String(worktreeRef));
+  }
+  if (check) {
+    args.push("--check");
+  }
+  if (bestOfN != null && Number(bestOfN) > 1) {
+    args.push("--best-of-n", String(bestOfN));
   }
   if (extraArgs?.length) {
     args.push(...extraArgs);

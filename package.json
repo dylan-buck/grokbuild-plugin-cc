@@ -1,14 +1,24 @@
 {
-  "name": "@xai-community/grok-plugin-cc",
+  "name": "@dylan-buck/grokbuild-plugin-cc",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Use Grok Build from Claude Code to review code or delegate tasks.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dylan-buck/grokbuild-plugin-cc.git"
+  },
+  "homepage": "https://github.com/dylan-buck/grokbuild-plugin-cc#readme",
+  "bugs": {
+    "url": "https://github.com/dylan-buck/grokbuild-plugin-cc/issues"
+  },
   "engines": {
     "node": ">=18.18.0"
   },
   "scripts": {
+    "bump-version": "node scripts/bump-version.mjs",
+    "check-version": "node scripts/bump-version.mjs --check",
     "test": "node --test tests/*.test.mjs"
   }
 }

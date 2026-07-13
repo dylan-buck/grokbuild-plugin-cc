@@ -16,6 +16,8 @@ import {
   normalizeReasoningEffort,
   parseStructuredOutput,
   readOutputSchema,
+  READ_ONLY_DISALLOWED_TOOLS,
+  REVIEW_DISALLOWED_TOOLS,
   runHeadlessTurn
 } from "./lib/grok.mjs";
 import {
@@ -59,18 +61,14 @@ const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 
-// Reviews should not invoke tools — the diff is embedded in the prompt.
-const REVIEW_DISALLOWED_TOOLS =
-  "run_terminal_command,run_terminal_cmd,search_replace,Write,Edit,Bash,Agent,spawn_subagent,web_search,web_fetch,image_gen,image_edit";
-
 function printUsage() {
   console.log(
     [
       "Usage:",
       "  node scripts/grok-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
-      "  node scripts/grok-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
-      "  node scripts/grok-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/grok-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model>] [--effort <none|minimal|low|medium|high|xhigh|max>] [prompt]",
+      "  node scripts/grok-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>]",
+      "  node scripts/grok-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [focus text]",
+      "  node scripts/grok-companion.mjs task [--background] [--write|--read] [--resume-last|--resume|--fresh] [--model <model>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--worktree] [--worktree-name <name>] [--worktree-ref <ref>] [--check] [--best-of-n <n>] [prompt]",
       "  node scripts/grok-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/grok-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/grok-companion.mjs result [job-id] [--json]",
@@ -329,9 +327,14 @@ async function executeReviewRun(request) {
     prompt,
     cwd: context.repoRoot,
     model: request.model,
-    yolo: false,
+    alwaysApprove: false,
+    // Embedded-diff review: block tools/subagents/web so Grok answers from the prompt only.
+    // Do not use max-turns=1 — Grok can still exit non-zero with "max turns reached" after a
+    // schema-constrained turn even when the JSON body is usable.
     disallowedTools: REVIEW_DISALLOWED_TOOLS,
     jsonSchema: schema,
+    noSubagents: true,
+    disableWebSearch: true,
     onProgress: request.onProgress
   });
 
@@ -364,8 +367,13 @@ async function executeReviewRun(request) {
     targetLabel: context.target.label
   });
 
+  // Prefer success when structured review JSON parsed cleanly, even if Grok exited non-zero
+  // (e.g. soft runtime warnings after a usable JSON body).
+  const structuredOk = Boolean(parsed.parsed && !parsed.parseError);
+  const exitStatus = structuredOk ? 0 : result.status === 0 && !result.text ? 1 : result.status;
+
   return {
-    exitStatus: result.status,
+    exitStatus,
     threadId: result.sessionId,
     turnId: null,
     payload,
@@ -414,12 +422,14 @@ async function executeTaskRun(request) {
     cwd: workspaceRoot,
     model: request.model,
     effort: request.effort,
-    yolo: write,
+    alwaysApprove: write,
     // Read-only tasks still need tools for investigation; block edits only.
-    disallowedTools: write
-      ? null
-      : "search_replace,Write,Edit",
+    disallowedTools: write ? null : READ_ONLY_DISALLOWED_TOOLS,
     resumeSessionId,
+    worktree: request.worktree ?? null,
+    worktreeRef: request.worktreeRef ?? null,
+    check: Boolean(request.check),
+    bestOfN: request.bestOfN ?? null,
     onProgress: request.onProgress
   });
 
@@ -522,7 +532,19 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 
-function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId }) {
+function buildTaskRequest({
+  cwd,
+  model,
+  effort,
+  prompt,
+  write,
+  resumeLast,
+  jobId,
+  worktree = null,
+  worktreeRef = null,
+  check = false,
+  bestOfN = null
+}) {
   return {
     cwd,
     model,
@@ -530,8 +552,33 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId
     prompt,
     write,
     resumeLast,
-    jobId
+    jobId,
+    worktree,
+    worktreeRef,
+    check,
+    bestOfN
   };
+}
+
+function parseOptionalWorktree(options) {
+  if (typeof options["worktree-name"] === "string" && options["worktree-name"].trim()) {
+    return options["worktree-name"].trim();
+  }
+  if (options.worktree === true) {
+    return true;
+  }
+  return null;
+}
+
+function parseBestOfN(value) {
+  if (value == null || value === "") {
+    return null;
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 1) {
+    throw new Error(`Invalid --best-of-n value "${value}". Use a positive integer.`);
+  }
+  return Math.floor(n);
 }
 
 function readTaskPrompt(cwd, options, positionals) {
@@ -677,8 +724,8 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "worktree-ref", "worktree-name", "best-of-n"],
+    booleanOptions: ["json", "write", "read", "resume-last", "resume", "fresh", "background", "check", "worktree"],
     aliasMap: {
       m: "model"
     }
@@ -695,7 +742,18 @@ async function handleTask(argv) {
   if (resumeLast && fresh) {
     throw new Error("Choose either --resume/--resume-last or --fresh.");
   }
-  const write = Boolean(options.write);
+  if (options.write && options.read) {
+    throw new Error("Choose either --write or --read.");
+  }
+  // Codex companion uses explicit --write. The rescue agent adds --write by default.
+  // --read is a Grok-plugin convenience for diagnosis-only runs.
+  const taskWrite = options.read ? false : Boolean(options.write);
+
+  const worktree = parseOptionalWorktree(options);
+  const worktreeRef = options["worktree-ref"] ?? null;
+  const check = Boolean(options.check);
+  const bestOfN = parseBestOfN(options["best-of-n"]);
+
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast
@@ -705,22 +763,26 @@ async function handleTask(argv) {
     ensureGrokAvailable(cwd);
     requireTaskRequest(prompt, resumeLast);
 
-    const job = buildTaskJob(workspaceRoot, taskMetadata, write);
+    const job = buildTaskJob(workspaceRoot, taskMetadata, taskWrite);
     const request = buildTaskRequest({
       cwd,
       model,
       effort,
       prompt,
-      write,
+      write: taskWrite,
       resumeLast,
-      jobId: job.id
+      jobId: job.id,
+      worktree,
+      worktreeRef,
+      check,
+      bestOfN
     });
     const { payload } = enqueueBackgroundJob(cwd, job, request, "task-worker");
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
     return;
   }
 
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write);
+  const job = buildTaskJob(workspaceRoot, taskMetadata, taskWrite);
   await runForegroundCommand(
     job,
     (progress) =>
@@ -729,13 +791,109 @@ async function handleTask(argv) {
         model,
         effort,
         prompt,
-        write,
+        write: taskWrite,
         resumeLast,
         jobId: job.id,
+        worktree,
+        worktreeRef,
+        check,
+        bestOfN,
         onProgress: progress
       }),
     { json: options.json }
   );
+}
+
+async function tryGrokImport(sourcePath, cwd, options = {}) {
+  const availability = getGrokAvailability(cwd);
+  if (!availability.available) {
+    return { attempted: false, imported: false, detail: availability.detail, sessionId: null };
+  }
+
+  const timeoutMs = Math.max(1_000, Number(options.timeoutMs) || 30_000);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(value);
+    };
+
+    const child = spawn(availability.binary, ["import", "--json", sourcePath], {
+      cwd,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      try {
+        terminateProcessTree(child.pid ?? Number.NaN);
+      } catch {
+        // ignore
+      }
+      finish({
+        attempted: true,
+        imported: false,
+        detail: `import timed out after ${timeoutMs}ms`,
+        sessionId: null,
+        raw: null
+      });
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      const lines = stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      let last = null;
+      for (const line of lines) {
+        try {
+          last = JSON.parse(line);
+        } catch {
+          // ignore non-JSON lines
+        }
+      }
+      const outcome = last?.outcome ?? null;
+      // Only treat explicit success outcomes as imported. A UUID-looking sessionId alone
+      // is not enough (Grok may echo the source path or skip with an error).
+      const imported =
+        code === 0 &&
+        outcome !== "skipped" &&
+        (outcome === "imported" || outcome === "ok" || outcome === "created");
+      finish({
+        attempted: true,
+        imported,
+        detail: last?.error || stderr.trim() || (imported ? "imported" : `import exit ${code}${outcome ? ` (${outcome})` : ""}`),
+        sessionId:
+          imported && typeof last?.sessionId === "string" && !last.sessionId.endsWith(".jsonl")
+            ? last.sessionId
+            : null,
+        raw: last
+      });
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      finish({
+        attempted: true,
+        imported: false,
+        detail: error.message,
+        sessionId: null,
+        raw: null
+      });
+    });
+  });
 }
 
 async function handleTransfer(argv) {
@@ -754,11 +912,16 @@ async function handleTransfer(argv) {
   const handoffPath = path.join(handoffDir, `claude-handoff-${sessionId}-${Date.now()}.md`);
   fs.writeFileSync(handoffPath, handoffBody, "utf8");
 
+  // Prefer native `grok import` when the CLI accepts the Claude jsonl.
+  const importResult = await tryGrokImport(sourcePath, workspaceRoot);
+
   const payload = {
     sourcePath,
     handoffPath,
     sessionId,
-    mode: "best-effort"
+    mode: importResult.imported ? "imported" : "best-effort",
+    import: importResult,
+    resumeCommand: importResult.sessionId ? `grok --resume ${importResult.sessionId}` : null
   };
   outputCommandResult(payload, renderTransferResult(payload), options.json);
 }

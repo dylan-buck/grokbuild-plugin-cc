@@ -1,38 +1,34 @@
-# Grok plugin for Claude Code
+# Grok Build plugin for Claude Code
 
-Use [Grok Build](https://x.ai/cli) from inside Claude Code for code reviews or to delegate tasks to Grok.
+Use Grok Build from inside Claude Code for code reviews or to delegate tasks to Grok.
 
-This plugin mirrors the UX of OpenAI’s official [codex-plugin-cc](https://github.com/openai/codex-plugin-cc): slash commands, a thin rescue subagent, background job tracking, and an optional stop-time review gate. The runtime wraps your local `grok` CLI headless mode instead of Codex’s app-server.
-
-Not affiliated with xAI or OpenAI.
+This plugin is for Claude Code users who want an easy way to start using Grok Build from the workflow
+they already have.
 
 ## What You Get
 
-- `/grok:review` — read-only code review of your working tree or branch
-- `/grok:adversarial-review` — steerable challenge review
-- `/grok:rescue`, `/grok:transfer`, `/grok:status`, `/grok:result`, `/grok:cancel` — delegate work, hand off sessions, manage background jobs
-- `/grok:setup` — install/auth checks and optional review gate toggle
-- `grok:grok-rescue` subagent for proactive handoff from Claude
+- `/grok:review` for a normal read-only Grok review
+- `/grok:adversarial-review` for a steerable challenge review
+- `/grok:rescue`, `/grok:transfer`, `/grok:status`, `/grok:result`, and `/grok:cancel` to delegate work, hand off sessions, and manage background jobs
 
 ## Requirements
 
-- **Grok Build CLI** with access (see [x.ai/cli](https://x.ai/cli))
-- Signed in via `grok login` **or** `XAI_API_KEY`
+- **Grok Build access** (xAI account / Grok subscription or `XAI_API_KEY`).
+  - Usage will contribute to your Grok usage limits. [Learn more](https://x.ai/cli).
 - **Node.js 18.18 or later**
 
 ## Install
 
-Add the marketplace in Claude Code (local path while developing, or a GitHub repo once published):
+Add the marketplace in Claude Code:
 
 ```bash
-/plugin marketplace add /Users/you/path/to/grok-plugin-cc
-# or: /plugin marketplace add your-org/grok-plugin-cc
+/plugin marketplace add dylan-buck/grokbuild-plugin-cc
 ```
 
 Install the plugin:
 
 ```bash
-/plugin install grok@grok-plugin-cc
+/plugin install grok@grokbuild
 ```
 
 Reload plugins:
@@ -47,17 +43,44 @@ Then run:
 /grok:setup
 ```
 
-If Grok is missing, install Grok Build and ensure `grok` is on your `PATH` (or set `GROK_BIN`). If it is installed but not logged in:
+`/grok:setup` will tell you whether Grok is ready. If Grok is missing, install [Grok Build](https://x.ai/cli) and ensure `grok` is on your `PATH` (or set `GROK_BIN`).
+
+If Grok is installed but not logged in yet, run:
 
 ```bash
 !grok login
+```
+
+After install, you should see:
+
+- the slash commands listed below
+- the `grok:grok-rescue` subagent in `/agents`
+
+One simple first run is:
+
+```bash
+/grok:review --background
+/grok:status
+/grok:result
 ```
 
 ## Usage
 
 ### `/grok:review`
 
-Read-only review of uncommitted changes, or of a branch with `--base <ref>`.
+Runs a normal Grok review on your current work. The companion embeds your git diff and runs a structured, read-only review through the local Grok CLI.
+
+> [!NOTE]
+> Code review especially for multi-file changes might take a while. It's generally recommended to run it in the background.
+
+Use it when you want:
+
+- a review of your current uncommitted changes
+- a review of your branch compared to a base branch like `main`
+
+Use `--base <ref>` for branch review. It also supports `--wait` and `--background`. It is not steerable and does not take custom focus text. Use [`/grok:adversarial-review`](#grokadversarial-review) when you want to challenge a specific decision or risk area.
+
+Examples:
 
 ```bash
 /grok:review
@@ -65,86 +88,238 @@ Read-only review of uncommitted changes, or of a branch with `--base <ref>`.
 /grok:review --background
 ```
 
-The companion embeds the git diff in the prompt and disables write tools so review is deterministic.
+This command is read-only and will not perform any changes. When run in the background you can use [`/grok:status`](#grokstatus) to check on the progress and [`/grok:cancel`](#grokcancel) to cancel the ongoing task.
 
 ### `/grok:adversarial-review`
 
-Same targeting as review, but steerable. Extra text after flags becomes focus:
+Runs a **steerable** review that questions the chosen implementation and design.
+
+It can be used to pressure-test assumptions, tradeoffs, failure modes, and whether a different approach would have been safer or simpler.
+
+It uses the same review target selection as `/grok:review`, including `--base <ref>` for branch review.
+It also supports `--wait` and `--background`. Unlike `/grok:review`, it can take extra focus text after the flags.
+
+Use it when you want:
+
+- a review before shipping that challenges the direction, not just the code details
+- review focused on design choices, tradeoffs, hidden assumptions, and alternative approaches
+- pressure-testing around specific risk areas like auth, data loss, rollback, race conditions, or reliability
+
+Examples:
 
 ```bash
-/grok:adversarial-review --base main challenge the caching design
+/grok:adversarial-review
+/grok:adversarial-review --base main challenge whether this was the right caching and retry design
+/grok:adversarial-review --background look for race conditions and question the chosen approach
 ```
+
+This command is read-only. It does not fix code.
 
 ### `/grok:rescue`
 
-Delegates through the `grok:grok-rescue` subagent.
+Hands a task to Grok through the `grok:grok-rescue` subagent.
+
+Use it when you want Grok to:
+
+- investigate a bug
+- try a fix
+- continue a previous Grok task
+- take a faster or cheaper pass with a smaller model
+
+> [!NOTE]
+> Depending on the task and the model you choose these tasks might take a long time and it's generally recommended to force the task to be in the background or move the agent to the background.
+
+It supports `--background`, `--wait`, `--resume`, and `--fresh`. If you omit `--resume` and `--fresh`, the plugin can offer to continue the latest rescue thread for this repo.
+
+Examples:
 
 ```bash
 /grok:rescue investigate why the tests started failing
+/grok:rescue fix the failing test with the smallest safe patch
 /grok:rescue --resume apply the top fix from the last run
-/grok:rescue --model grok-build --effort high --background fix the flaky suite
+/grok:rescue --model grok-4.5 --effort high investigate the flaky integration test
+/grok:rescue --read why is the auth middleware rejecting valid tokens?
+/grok:rescue --background investigate the regression
 ```
 
-Defaults to write-capable Grok (`--write` under the hood). Use a read-only ask if you only want diagnosis without edits.
+You can also just ask for a task to be delegated to Grok:
 
-### `/grok:status` / `/grok:result` / `/grok:cancel`
-
-Background job control for the current repository:
-
-```bash
-/grok:status
-/grok:result task-abc123
-/grok:cancel task-abc123
+```text
+Ask Grok to redesign the database connection to be more resilient.
 ```
 
-Finished jobs include a Grok session ID when available:
+**Notes:**
 
-```bash
-grok --resume <session-id>
-```
+- if you do not pass `--model` or `--effort`, Grok chooses its own defaults.
+- follow-up rescue requests can continue the latest Grok task in the repo
+- rescue defaults to write-capable work; use `--read` for diagnosis-only
+- Grok-native extras: `--worktree`, `--worktree-name`, `--worktree-ref`, `--check`, `--best-of-n`
 
 ### `/grok:transfer`
 
-Best-effort Claude → Grok handoff. Grok does not currently expose a Codex-style session importer, so the plugin writes a handoff markdown package you can open in Grok.
+Creates a best-effort handoff from the current Claude Code session so you can continue in Grok.
+
+It writes a handoff markdown package and attempts `grok import` when the local Grok CLI accepts the Claude transcript. When import is skipped or unsupported, use the handoff file with `grok --prompt-file` or paste it into the Grok TUI.
+
+Examples:
 
 ```bash
 /grok:transfer
-/grok:transfer --source ~/.claude/projects/.../<session>.jsonl
+/grok:transfer --source ~/.claude/projects/-Users-me-repo/<session-id>.jsonl
+```
+
+The plugin's existing `SessionStart` hook supplies the current transcript path automatically; `--source` is available as a manual override. The source must be under `~/.claude/projects`.
+
+### `/grok:status`
+
+Shows running and recent Grok jobs for the current repository.
+
+Examples:
+
+```bash
+/grok:status
+/grok:status task-abc123
+```
+
+Use it to:
+
+- check progress on background work
+- see the latest completed job
+- confirm whether a task is still running
+
+### `/grok:result`
+
+Shows the final stored Grok output for a finished job.
+When available, it also includes the Grok session ID so you can reopen that run directly in Grok with `grok --resume <session-id>`.
+
+Examples:
+
+```bash
+/grok:result
+/grok:result task-abc123
+```
+
+### `/grok:cancel`
+
+Cancels an active background Grok job.
+
+Examples:
+
+```bash
+/grok:cancel
+/grok:cancel task-abc123
 ```
 
 ### `/grok:setup`
 
+Checks whether Grok is installed and authenticated.
+
+You can also use `/grok:setup` to manage the optional review gate.
+
+#### Enabling review gate
+
 ```bash
-/grok:setup
 /grok:setup --enable-review-gate
 /grok:setup --disable-review-gate
 ```
 
-When the review gate is enabled, a `Stop` hook runs a targeted Grok review of Claude’s last turn and can block stop if issues remain. This can use a lot of quota — enable only when monitoring the session.
+When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted Grok review based on Claude's response. If that review finds issues, the stop is blocked so Claude can address them first.
 
-## Architecture
+> [!WARNING]
+> The review gate can create a long-running Claude/Grok loop and may drain usage limits quickly. Only enable it when you plan to actively monitor the session.
 
+## Typical Flows
+
+### Review Before Shipping
+
+```bash
+/grok:review
 ```
-Claude Code slash commands / agents / hooks
-        │
-        ▼
-plugins/grok/scripts/grok-companion.mjs
-  ├── job registry (CLAUDE_PLUGIN_DATA)
-  ├── git context for reviews
-  └── spawn local `grok -p --output-format json`
+
+### Hand A Problem To Grok
+
+```bash
+/grok:rescue investigate why the build is failing in CI
 ```
 
-Unlike Codex’s app-server broker, each job is a headless process. Cancel sends SIGTERM to the process group. Resume uses Grok’s native session IDs.
+### Start Something Long-Running
 
-## Configuration
+```bash
+/grok:adversarial-review --background
+/grok:rescue --background investigate the flaky test
+```
 
-Grok’s own config still applies:
+Then check in with:
 
-- User: `~/.grok/config.toml`
-- Auth: `~/.grok/auth.json` or `XAI_API_KEY`
-- Override binary: `GROK_BIN=/path/to/grok`
+```bash
+/grok:status
+/grok:result
+```
 
-Plugin job state lives under Claude’s plugin data directory (or a temp fallback).
+## Grok Integration
+
+The Grok Build plugin wraps the local [Grok Build CLI](https://x.ai/cli) headless mode (`grok -p`). It uses the `grok` binary installed in your environment and applies the same configuration and authentication as interactive Grok.
+
+### Common Configurations
+
+If you want to change the default reasoning effort or the default model that gets used by the plugin, you can define that inside your user-level or project-level Grok config. For example to always use `grok-4.5` on `high` for a specific project you can add the following to a `~/.grok/config.toml` or project-level Grok config:
+
+```toml
+# Example — see Grok Build docs for current keys
+# model and reasoning defaults are controlled by Grok CLI config / flags
+```
+
+Your configuration will be picked up based on:
+
+- user-level config in `~/.grok/config.toml`
+- local auth in `~/.grok/auth.json` or `XAI_API_KEY`
+- optional binary override via `GROK_BIN`
+
+You can also pass per-run overrides:
+
+```bash
+/grok:rescue --model grok-4.5 --effort high fix the flaky suite
+```
+
+### Moving The Work Over To Grok
+
+Delegated tasks and any [stop gate](#enabling-review-gate) run can also be directly resumed inside Grok by running `grok --resume` either with the specific session ID you received from running `/grok:result` or `/grok:status` or by selecting it from the session list.
+
+This way you can review the Grok work or continue the work there.
+
+## FAQ
+
+### Do I need a separate Grok account for this plugin?
+
+If you are already signed into Grok Build on this machine, that account should work immediately here too. This plugin uses your local Grok CLI authentication.
+
+If you only use Claude Code today and have not used Grok Build yet, you will also need to sign in to Grok with either browser login or an API key. Run `/grok:setup` to check whether Grok is ready, and use `!grok login` (or `!grok login --device-auth`) if it is not. For CI/headless auth, set `XAI_API_KEY` from [console.x.ai](https://console.x.ai).
+
+### Does the plugin use a separate Grok runtime?
+
+No. This plugin delegates through your local [Grok Build CLI](https://x.ai/cli) on the same machine.
+
+That means:
+
+- it uses the same Grok install you would use directly
+- it uses the same local authentication state
+- it uses the same repository checkout and machine-local environment
+
+### Will it use the same Grok config I already have?
+
+Yes. If you already use Grok Build, the plugin picks up the same [configuration](#common-configurations) and credentials.
+
+### Can I keep using my current API key setup?
+
+Yes. Because the plugin uses your local Grok CLI, your existing sign-in method and config still apply.
+
+Set `XAI_API_KEY` when you want API-key auth instead of (or in addition to) browser login.
+
+### How is this different from OpenAI’s Codex plugin?
+
+The user-facing shape matches [codex-plugin-cc](https://github.com/openai/codex-plugin-cc): slash commands, rescue subagent, job status/result/cancel, optional stop-time review gate, and session handoff.
+
+Under the hood, Codex talks to the Codex app-server protocol. Grok Build is driven through headless CLI mode (`grok -p --output-format json`) and native Grok session IDs for resume.
 
 ## Development
 
@@ -152,15 +327,10 @@ Plugin job state lives under Claude’s plugin data directory (or a temp fallbac
 npm test
 ```
 
-Tests use a fake `grok` binary (`tests/fake-grok.mjs`) so CI does not need real Grok credentials.
-
-Manual smoke against a real install:
-
-```bash
-node plugins/grok/scripts/grok-companion.mjs setup --json
-node plugins/grok/scripts/grok-companion.mjs review --json
-```
+Tests use a fake `grok` binary so CI does not need live Grok credentials.
 
 ## License
 
 Apache-2.0. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
+
+Not affiliated with xAI or OpenAI.
