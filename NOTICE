@@ -1,0 +1,10 @@
+Grok Plugin for Claude Code
+Copyright 2026 Contributors
+
+This project is inspired by OpenAI's codex-plugin-cc
+(https://github.com/openai/codex-plugin-cc), licensed under Apache-2.0.
+Architectural patterns (companion CLI, job registry, slash-command contracts,
+review gate) informed this design. This is a clean-room reimplementation
+targeting the Grok Build CLI and is not affiliated with OpenAI or xAI.
+
+Licensed under the Apache License, Version 2.0.

@@ -1,0 +1,21 @@
+{
+  "name": "grok-plugin-cc",
+  "owner": {
+    "name": "Community"
+  },
+  "metadata": {
+    "description": "Grok Build plugin for Claude Code: review, rescue, and background job management.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "grok",
+      "description": "Use Grok Build from Claude Code to review code or delegate tasks.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Community"
+      },
+      "source": "./plugins/grok"
+    }
+  ]
+}
