@@ -42,7 +42,7 @@ test("adversarial-review accepts focus text and returns findings", () => {
   assert.equal(payload.result.verdict, "needs-attention");
 });
 
-test("review rejects focus text (parity with Codex)", () => {
+test("review accepts focus text (prompt-based Grok reviews)", () => {
   const cwd = initGitRepo(makeTempDir("grok-rev-focus-"));
   fs.writeFileSync(path.join(cwd, "x.js"), "1\n", "utf8");
   const result = runCompanion(["review", "--json", "please focus on races"], {
@@ -50,8 +50,10 @@ test("review rejects focus text (parity with Codex)", () => {
     pluginData: makeTempDir("grok-pdata-focus-"),
     env: { FAKE_GROK_MODE: "review-json", XAI_API_KEY: "k" }
   });
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /adversarial-review/);
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.review, "Review");
+  assert.equal(payload.result.verdict, "needs-attention");
 });
 
 test("task --read is not write-capable", () => {

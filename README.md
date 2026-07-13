@@ -78,7 +78,7 @@ Use it when you want:
 - a review of your current uncommitted changes
 - a review of your branch compared to a base branch like `main`
 
-Use `--base <ref>` for branch review. It also supports `--wait` and `--background`. It is not steerable and does not take custom focus text. Use [`/grok:adversarial-review`](#grokadversarial-review) when you want to challenge a specific decision or risk area.
+Use `--base <ref>` for branch review. It also supports `--wait` and `--background`. Optional free text after flags is treated as review focus. Use [`/grok:adversarial-review`](#grokadversarial-review) when you want a deliberately skeptical challenge of the design, not just a normal review.
 
 Examples:
 
@@ -86,6 +86,7 @@ Examples:
 /grok:review
 /grok:review --base main
 /grok:review --background
+/grok:review focus on tone conversation accuracy and App Store readiness
 ```
 
 This command is read-only and will not perform any changes. When run in the background you can use [`/grok:status`](#grokstatus) to check on the progress and [`/grok:cancel`](#grokcancel) to cancel the ongoing task.

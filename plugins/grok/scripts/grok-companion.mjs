@@ -261,6 +261,7 @@ function buildReviewPrompt(context, options = {}) {
   const template = loadPromptTemplate(ROOT_DIR, "review");
   return interpolateTemplate(template, {
     TARGET_LABEL: context.target.label,
+    USER_FOCUS: focusText,
     REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
     REVIEW_INPUT: context.content
   });
@@ -348,12 +349,6 @@ async function executeReviewRun(request) {
   });
   const focusText = request.focusText?.trim() ?? "";
   const reviewName = request.reviewName ?? "Review";
-
-  if (reviewName === "Review" && focusText) {
-    throw new Error(
-      `\`/grok:review\` does not support custom focus text. Retry with \`/grok:adversarial-review ${focusText}\`.`
-    );
-  }
 
   const context = collectReviewContext(request.cwd, target);
   if (context.fileCount === 0 && target.mode === "working-tree") {
@@ -759,15 +754,10 @@ async function handleReviewCommand(argv, config) {
 }
 
 async function handleReview(argv) {
+  // Focus text is allowed: Grok reviews are prompt-based (unlike Codex native reviewer).
+  // Use adversarial-review when the user wants a deliberately skeptical/challenge stance.
   return handleReviewCommand(argv, {
-    reviewName: "Review",
-    validateRequest(target, focusText) {
-      if (focusText.trim()) {
-        throw new Error(
-          `\`/grok:review\` does not support custom focus text. Retry with \`/grok:adversarial-review ${focusText.trim()}\`.`
-        );
-      }
-    }
+    reviewName: "Review"
   });
 }
 

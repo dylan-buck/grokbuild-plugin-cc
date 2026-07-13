@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+- `/grok:review` now accepts optional focus text (Grok reviews are prompt-based; no need to force adversarial-review for ordinary focus).
+
 ## 1.0.0
 
 First production release of the Grok Build plugin for Claude Code.

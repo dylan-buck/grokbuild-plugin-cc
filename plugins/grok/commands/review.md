@@ -1,11 +1,13 @@
 ---
 description: Run a Grok code review against local git state
-argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch]'
+argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [focus text]'
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---
 
 Run a Grok review through the shared companion reviewer.
+Optional free text after flags is treated as review focus (weight those areas; still report other material issues).
+Use `/grok:adversarial-review` when the user wants a deliberately skeptical challenge of the design, not just a normal review.
 
 Raw slash-command arguments:
 `$ARGUMENTS`
@@ -36,8 +38,9 @@ Argument handling:
 - Do not strip `--wait` or `--background` yourself.
 - Do not add extra review instructions or rewrite the user's intent.
 - The companion script parses `--wait` and `--background`, but Claude Code's `Bash(..., run_in_background: true)` is what actually detaches the run.
-- `/grok:review` is standard review only. It does not support staged-only review, unstaged-only review, or extra focus text.
-- If the user needs custom review instructions or more adversarial framing, they should use `/grok:adversarial-review`.
+- `/grok:review` supports optional focus text after flags. Preserve it exactly in `$ARGUMENTS`.
+- It does not support staged-only or unstaged-only review scopes.
+- If the user wants a deliberately adversarial / “break confidence in this design” review, prefer `/grok:adversarial-review`.
 
 Foreground flow:
 - Run:
