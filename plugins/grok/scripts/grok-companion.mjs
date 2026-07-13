@@ -327,8 +327,9 @@ async function executeReviewRun(request) {
     prompt,
     cwd: context.repoRoot,
     model: request.model,
-    alwaysApprove: false,
+    alwaysApprove: true,
     // Embedded-diff review: block tools/subagents/web so Grok answers from the prompt only.
+    // Large diffs automatically use --prompt-file (see runHeadlessTurn threshold).
     // Do not use max-turns=1 — Grok can still exit non-zero with "max turns reached" after a
     // schema-constrained turn even when the JSON body is usable.
     disallowedTools: REVIEW_DISALLOWED_TOOLS,
@@ -422,7 +423,9 @@ async function executeTaskRun(request) {
     cwd: workspaceRoot,
     model: request.model,
     effort: request.effort,
-    alwaysApprove: write,
+    // Always unattended (Codex approvalPolicy "never"). Read-only still needs tool auto-approval
+    // so diagnosis tasks do not hang waiting for a TTY permission prompt.
+    alwaysApprove: true,
     // Read-only tasks still need tools for investigation; block edits only.
     disallowedTools: write ? null : READ_ONLY_DISALLOWED_TOOLS,
     resumeSessionId,

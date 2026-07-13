@@ -6,10 +6,13 @@ import { spawnSync } from "node:child_process";
 
 import {
   GROK_TOOL_IDS,
+  PROMPT_FILE_THRESHOLD_BYTES,
   READ_ONLY_DISALLOWED_TOOLS,
   REVIEW_DISALLOWED_TOOLS
 } from "../plugins/grok/scripts/lib/grok.mjs";
+import { reconcileStaleJob } from "../plugins/grok/scripts/lib/job-control.mjs";
 import { renderTransferResult } from "../plugins/grok/scripts/lib/render.mjs";
+import { upsertJob, writeJobFile } from "../plugins/grok/scripts/lib/state.mjs";
 import { initGitRepo, makeTempDir, runCompanion, FAKE_GROK, COMPANION } from "./helpers.mjs";
 
 test("review tool denylist uses Grok headless tool IDs", () => {
@@ -215,4 +218,32 @@ test("companion help lists all subcommands", () => {
 
 test("fake grok path is used when GROK_BIN set", () => {
   assert.ok(fs.existsSync(FAKE_GROK));
+});
+
+test("prompt-file threshold is set for large review diffs", () => {
+  assert.ok(PROMPT_FILE_THRESHOLD_BYTES >= 16 * 1024);
+});
+
+test("reconcileStaleJob marks dead PIDs failed", () => {
+  const cwd = initGitRepo(makeTempDir("grok-stale-"));
+  const pluginData = makeTempDir("grok-pdata-stale-");
+  process.env.CLAUDE_PLUGIN_DATA = pluginData;
+
+  const job = {
+    id: "task-dead-1",
+    status: "running",
+    phase: "running",
+    pid: 999_999_999,
+    kind: "task",
+    jobClass: "task",
+    title: "Dead",
+    workspaceRoot: cwd
+  };
+  writeJobFile(cwd, job.id, job);
+  upsertJob(cwd, job);
+
+  const next = reconcileStaleJob(cwd, job);
+  assert.equal(next.status, "failed");
+  assert.equal(next.pid, null);
+  assert.match(next.errorMessage, /no longer running/i);
 });

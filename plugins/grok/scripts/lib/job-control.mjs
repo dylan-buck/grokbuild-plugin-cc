@@ -1,8 +1,68 @@
 import fs from "node:fs";
+import process from "node:process";
 
-import { getConfig, listJobs, readJobFile, resolveJobFile } from "./state.mjs";
-import { SESSION_ID_ENV } from "./tracked-jobs.mjs";
+import { getConfig, listJobs, readJobFile, resolveJobFile, upsertJob, writeJobFile } from "./state.mjs";
+import { SESSION_ID_ENV, nowIso } from "./tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
+
+function isProcessAlive(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+/**
+ * If a job is still marked active but its PID is gone, mark it failed.
+ * Process-based Grok jobs can die without updating state (kill -9, OOM, crash).
+ */
+export function reconcileStaleJob(workspaceRoot, job) {
+  if (!job || (job.status !== "queued" && job.status !== "running")) {
+    return job;
+  }
+  if (job.pid == null) {
+    return job;
+  }
+  if (isProcessAlive(Number(job.pid))) {
+    return job;
+  }
+
+  const completedAt = nowIso();
+  const errorMessage = `Process ${job.pid} is no longer running; marked failed during status reconciliation.`;
+  const next = {
+    ...job,
+    status: "failed",
+    phase: "failed",
+    pid: null,
+    completedAt,
+    errorMessage
+  };
+
+  try {
+    const stored = readStoredJob(workspaceRoot, job.id) ?? {};
+    writeJobFile(workspaceRoot, job.id, {
+      ...stored,
+      ...next
+    });
+    upsertJob(workspaceRoot, {
+      id: job.id,
+      status: "failed",
+      phase: "failed",
+      pid: null,
+      completedAt,
+      errorMessage
+    });
+  } catch {
+    // Best-effort; still return reconciled view for this status call.
+  }
+
+  return next;
+}
 
 export const DEFAULT_MAX_STATUS_JOBS = 8;
 export const DEFAULT_MAX_PROGRESS_LINES = 4;
@@ -180,7 +240,9 @@ function matchJobReference(jobs, reference, predicate = () => true) {
 export function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
-  const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), options));
+  const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), options)).map((job) =>
+    reconcileStaleJob(workspaceRoot, job)
+  );
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
 
@@ -213,10 +275,11 @@ export function buildStatusSnapshot(cwd, options = {}) {
 export function buildSingleJobSnapshot(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
-  const selected = matchJobReference(jobs, reference);
-  if (!selected) {
+  const selectedRaw = matchJobReference(jobs, reference);
+  if (!selectedRaw) {
     throw new Error(`No job found for "${reference}". Run /grok:status to inspect known jobs.`);
   }
+  const selected = reconcileStaleJob(workspaceRoot, selectedRaw);
 
   return {
     workspaceRoot,

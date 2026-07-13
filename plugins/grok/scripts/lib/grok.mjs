@@ -223,8 +223,15 @@ export const REVIEW_DISALLOWED_TOOLS = [
 /** Tools blocked for read-only investigation tasks (no file edits). */
 export const READ_ONLY_DISALLOWED_TOOLS = [GROK_TOOL_IDS.edit].join(",");
 
+/** Prefer --prompt-file over -p once the prompt risks OS argv limits or shell issues. */
+export const PROMPT_FILE_THRESHOLD_BYTES = 24 * 1024;
+
 /**
  * Run a single headless Grok turn and return structured result.
+ *
+ * Unlike Codex app-server (JSON-RPC over a long-lived process), Grok headless is one
+ * process per turn. Large review prompts are written to a temp file and passed with
+ * --prompt-file so we do not blow OS ARG_MAX.
  */
 export function runHeadlessTurn(options = {}) {
   const {
@@ -232,8 +239,8 @@ export function runHeadlessTurn(options = {}) {
     cwd = process.cwd(),
     model = null,
     effort = null,
-    // Prefer documented --always-approve; --yolo remains accepted by the CLI.
-    alwaysApprove = false,
+    // Plugin runs are unattended (Codex equivalent: approvalPolicy "never").
+    alwaysApprove = true,
     yolo = false,
     tools = null,
     disallowedTools = null,
@@ -249,7 +256,8 @@ export function runHeadlessTurn(options = {}) {
     extraArgs = [],
     env = process.env,
     onProgress = null,
-    timeoutMs = 0
+    timeoutMs = 0,
+    promptFileThresholdBytes = PROMPT_FILE_THRESHOLD_BYTES
   } = options;
 
   if (!prompt || !String(prompt).trim()) {
@@ -264,7 +272,22 @@ export function runHeadlessTurn(options = {}) {
   }
 
   const binary = availability.binary;
-  const args = ["-p", String(prompt), "--output-format", "json", "--no-auto-update"];
+  const promptText = String(prompt);
+  const tempFiles = [];
+  const args = ["--output-format", "json", "--no-auto-update"];
+
+  // Large embedded diffs (reviews) must not go through argv.
+  if (Buffer.byteLength(promptText, "utf8") >= promptFileThresholdBytes) {
+    const promptPath = path.join(
+      os.tmpdir(),
+      `grok-plugin-prompt-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`
+    );
+    fs.writeFileSync(promptPath, promptText, "utf8");
+    tempFiles.push(promptPath);
+    args.push("--prompt-file", promptPath);
+  } else {
+    args.push("-p", promptText);
+  }
 
   if (alwaysApprove || yolo) {
     // Documented flag in `grok --help`; --yolo is a compatible alias in current builds.
@@ -290,6 +313,7 @@ export function runHeadlessTurn(options = {}) {
   }
   if (jsonSchema) {
     const schemaText = typeof jsonSchema === "string" ? jsonSchema : JSON.stringify(jsonSchema);
+    // Schema is small; keep inline. Grok accepts the JSON string on --json-schema.
     args.push("--json-schema", schemaText);
   }
   if (maxTurns != null && Number(maxTurns) > 0) {
@@ -321,6 +345,16 @@ export function runHeadlessTurn(options = {}) {
 
   onProgress?.({ message: `Starting Grok (${binary}).`, phase: "starting" });
 
+  const cleanupTemp = () => {
+    for (const filePath of tempFiles) {
+      try {
+        fs.unlinkSync(filePath);
+      } catch {
+        // ignore
+      }
+    }
+  };
+
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, {
       cwd,
@@ -343,6 +377,7 @@ export function runHeadlessTurn(options = {}) {
         }
         if (!settled) {
           settled = true;
+          cleanupTemp();
           reject(new Error(`Grok timed out after ${timeoutMs}ms.`));
         }
       }, timeoutMs);
@@ -365,6 +400,7 @@ export function runHeadlessTurn(options = {}) {
       }
       if (!settled) {
         settled = true;
+        cleanupTemp();
         reject(error);
       }
     });
@@ -373,6 +409,7 @@ export function runHeadlessTurn(options = {}) {
       if (timer) {
         clearTimeout(timer);
       }
+      cleanupTemp();
       if (settled) {
         return;
       }
