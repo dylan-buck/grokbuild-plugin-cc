@@ -62,6 +62,7 @@ export function terminateProcessTree(pid, options = {}) {
   const platform = options.platform ?? process.platform;
   const runCommandImpl = options.runCommandImpl ?? runCommand;
   const killImpl = options.killImpl ?? process.kill.bind(process);
+  const attempts = [];
 
   if (platform === "win32") {
     const result = runCommandImpl("taskkill", ["/PID", String(pid), "/T", "/F"], {
@@ -70,21 +71,21 @@ export function terminateProcessTree(pid, options = {}) {
     });
 
     if (!result.error && result.status === 0) {
-      return { attempted: true, delivered: true, method: "taskkill", result };
+      return { attempted: true, delivered: true, method: "taskkill", result, attempts: ["taskkill"] };
     }
 
     const combinedOutput = `${result.stderr}\n${result.stdout}`.trim();
     if (!result.error && looksLikeMissingProcessMessage(combinedOutput)) {
-      return { attempted: true, delivered: false, method: "taskkill", result };
+      return { attempted: true, delivered: false, method: "taskkill", result, attempts: ["taskkill"] };
     }
 
     if (result.error?.code === "ENOENT") {
       try {
         killImpl(pid);
-        return { attempted: true, delivered: true, method: "kill" };
+        return { attempted: true, delivered: true, method: "kill", attempts: ["kill"] };
       } catch (error) {
         if (error?.code === "ESRCH") {
-          return { attempted: true, delivered: false, method: "kill" };
+          return { attempted: true, delivered: false, method: "kill", attempts: ["kill"] };
         }
         throw error;
       }
@@ -97,23 +98,48 @@ export function terminateProcessTree(pid, options = {}) {
     throw new Error(formatCommandFailure(result));
   }
 
+  // Prefer process-group kill (detached workers), then direct PID.
   try {
     killImpl(-pid, "SIGTERM");
-    return { attempted: true, delivered: true, method: "process-group" };
+    attempts.push("process-group");
+    return { attempted: true, delivered: true, method: "process-group", attempts };
   } catch (error) {
+    attempts.push("process-group-failed");
     if (error?.code !== "ESRCH") {
       try {
         killImpl(pid, "SIGTERM");
-        return { attempted: true, delivered: true, method: "process" };
+        attempts.push("process");
+        return { attempted: true, delivered: true, method: "process", attempts };
       } catch (innerError) {
+        attempts.push("process-failed");
         if (innerError?.code === "ESRCH") {
-          return { attempted: true, delivered: false, method: "process" };
+          return { attempted: true, delivered: false, method: "process", attempts };
         }
-        throw innerError;
+        // Last resort: try SIGKILL on the pid only.
+        try {
+          killImpl(pid, "SIGKILL");
+          attempts.push("sigkill");
+          return { attempted: true, delivered: true, method: "sigkill", attempts };
+        } catch (killError) {
+          if (killError?.code === "ESRCH") {
+            return { attempted: true, delivered: false, method: "sigkill", attempts };
+          }
+          throw killError;
+        }
       }
     }
 
-    return { attempted: true, delivered: false, method: "process-group" };
+    // Group kill reported ESRCH — try direct pid before giving up.
+    try {
+      killImpl(pid, "SIGTERM");
+      attempts.push("process");
+      return { attempted: true, delivered: true, method: "process", attempts };
+    } catch (innerError) {
+      if (innerError?.code === "ESRCH") {
+        return { attempted: true, delivered: false, method: "process-group", attempts };
+      }
+      throw innerError;
+    }
   }
 }
 

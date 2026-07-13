@@ -1,5 +1,5 @@
 ---
-description: Show the final stored Grok output for a finished job
+description: Show the stored final output for a finished Grok job in this repository
 argument-hint: '[job-id]'
 disable-model-invocation: true
 allowed-tools: Bash(node:*)

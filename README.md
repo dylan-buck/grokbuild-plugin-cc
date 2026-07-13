@@ -315,6 +315,18 @@ Yes. Because the plugin uses your local Grok CLI, your existing sign-in method a
 
 Set `XAI_API_KEY` when you want API-key auth instead of (or in addition to) browser login.
 
+### Does setup actually verify my login?
+
+Yes. `/grok:setup` checks that the `grok` binary is present, then runs a short live headless probe unless you pass `--skip-live-auth`. Cached `auth.json` alone is not treated as sufficient if the probe fails.
+
+### What happens to jobs when I exit Claude?
+
+Running Grok jobs for that Claude session are cancelled. **Finished** jobs stay in the registry so `/grok:result` still works after you come back.
+
+### Why did transfer not fully import my Claude session?
+
+Grok’s `import` command is best-effort and may skip some Claude transcript shapes. The plugin always writes a handoff markdown file under `.grok-plugin-handoffs/` you can open with `grok --prompt-file …`.
+
 ### How is this different from OpenAI’s Codex plugin?
 
 The user-facing shape matches [codex-plugin-cc](https://github.com/openai/codex-plugin-cc): slash commands, rescue subagent, job status/result/cancel, optional stop-time review gate, and session handoff.
@@ -325,9 +337,11 @@ Under the hood, Codex talks to the Codex app-server protocol. Grok Build is driv
 
 ```bash
 npm test
+node scripts/bump-version.mjs --check
+claude plugin validate .
 ```
 
-Tests use a fake `grok` binary so CI does not need live Grok credentials.
+Tests use a fake `grok` binary so CI does not need live Grok credentials. See [CONTRIBUTING.md](./CONTRIBUTING.md) for release steps.
 
 ## License
 

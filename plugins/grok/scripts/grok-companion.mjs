@@ -15,6 +15,7 @@ import {
   getGrokAvailability,
   normalizeReasoningEffort,
   parseStructuredOutput,
+  probeGrokAuthLive,
   readOutputSchema,
   READ_ONLY_DISALLOWED_TOOLS,
   REVIEW_DISALLOWED_TOOLS,
@@ -65,7 +66,7 @@ function printUsage() {
   console.log(
     [
       "Usage:",
-      "  node scripts/grok-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
+      "  node scripts/grok-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--skip-live-auth] [--json]",
       "  node scripts/grok-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>]",
       "  node scripts/grok-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [focus text]",
       "  node scripts/grok-companion.mjs task [--background] [--write|--read] [--resume-last|--resume|--fresh] [--model <model>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--worktree] [--worktree-name <name>] [--worktree-ref <ref>] [--check] [--best-of-n <n>] [prompt]",
@@ -150,12 +151,35 @@ function ensureGrokAvailable(cwd) {
   }
 }
 
-async function buildSetupReport(cwd, actionsTaken = []) {
+async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
   const grokStatus = getGrokAvailability(cwd);
-  const authStatus = getGrokAuthStatus(cwd);
+  let authStatus = getGrokAuthStatus(cwd);
   const config = getConfig(workspaceRoot);
+  const skipLiveAuth = Boolean(options.skipLiveAuth);
+
+  if (grokStatus.available && authStatus.loggedIn && !skipLiveAuth) {
+    const live = await probeGrokAuthLive(cwd, { timeoutMs: 20_000 });
+    authStatus = {
+      ...authStatus,
+      liveVerified: live.liveVerified,
+      detail: live.liveVerified
+        ? `${authStatus.detail}; live probe OK`
+        : `${authStatus.detail}; live probe failed: ${live.detail}`,
+      loggedIn: live.liveVerified ? true : authStatus.loggedIn
+    };
+    // Treat failed live probe as not ready even if cache looked present.
+    if (!live.liveVerified) {
+      authStatus.loggedIn = false;
+    }
+  } else if (skipLiveAuth) {
+    authStatus = {
+      ...authStatus,
+      liveVerified: null,
+      detail: `${authStatus.detail}; live probe skipped`
+    };
+  }
 
   const nextSteps = [];
   if (!grokStatus.available) {
@@ -170,8 +194,14 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     nextSteps.push("Optional: run `/grok:setup --enable-review-gate` to require a fresh review before stop.");
   }
 
+  const ready =
+    nodeStatus.available &&
+    grokStatus.available &&
+    authStatus.loggedIn &&
+    (skipLiveAuth || authStatus.liveVerified !== false);
+
   return {
-    ready: nodeStatus.available && grokStatus.available && authStatus.loggedIn,
+    ready,
     node: nodeStatus,
     grok: grokStatus,
     auth: authStatus,
@@ -189,7 +219,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
 async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "skip-live-auth"]
   });
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
@@ -208,7 +238,9 @@ async function handleSetup(argv) {
     actionsTaken.push(`Disabled the stop-time review gate for ${workspaceRoot}.`);
   }
 
-  const finalReport = await buildSetupReport(cwd, actionsTaken);
+  const finalReport = await buildSetupReport(cwd, actionsTaken, {
+    skipLiveAuth: Boolean(options["skip-live-auth"])
+  });
   outputResult(options.json ? finalReport : renderSetupReport(finalReport), options.json);
 }
 
@@ -290,8 +322,18 @@ async function resolveLatestTrackedTaskSession(cwd, options = {}) {
   }
 
   const trackedTask = findLatestResumableTaskJob(visibleJobs);
-  if (trackedTask) {
+  if (trackedTask?.threadId) {
     return trackedTask.threadId;
+  }
+
+  // Prefer an explicit message when a finished task exists but lost its session id.
+  const finishedTaskWithoutSession = visibleJobs.find(
+    (job) => job.jobClass === "task" && job.status !== "queued" && job.status !== "running" && !job.threadId
+  );
+  if (finishedTaskWithoutSession) {
+    throw new Error(
+      `Previous task ${finishedTaskWithoutSession.id} finished without a stored Grok session ID, so it cannot be resumed. Start a fresh task (omit --resume) or re-run the work.`
+    );
   }
   return null;
 }
@@ -401,7 +443,9 @@ async function executeTaskRun(request) {
       excludeJobId: request.jobId
     });
     if (!resumeSessionId) {
-      throw new Error("No previous Grok task session was found for this repository.");
+      throw new Error(
+        "No previous Grok task session was found for this repository. Run a fresh `/grok:rescue` without --resume, or complete a task that returns a session ID first."
+      );
     }
   }
 
@@ -630,11 +674,13 @@ function enqueueBackgroundJob(cwd, job, request, workerCommand) {
   appendLogLine(logFile, "Queued for background execution.");
 
   const child = spawnDetachedWorker(cwd, job.id, workerCommand);
+  const workerPid = child.pid ?? null;
   const queuedRecord = {
     ...job,
     status: "queued",
     phase: "queued",
-    pid: child.pid ?? null,
+    pid: workerPid,
+    workerPid,
     logFile,
     request
   };
@@ -1064,9 +1110,27 @@ async function handleCancel(argv) {
   const reference = positionals[0] ?? "";
   const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process.env });
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
+  const pids = [...new Set([job.pid, job.workerPid, existing.pid, existing.workerPid].filter((v) => Number.isFinite(Number(v))).map(Number))];
 
-  terminateProcessTree(job.pid ?? Number.NaN);
-  appendLogLine(job.logFile, "Cancelled by user.");
+  const killResults = [];
+  for (const pid of pids) {
+    try {
+      killResults.push(terminateProcessTree(pid));
+    } catch (error) {
+      killResults.push({
+        attempted: true,
+        delivered: false,
+        method: "error",
+        detail: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+  if (pids.length === 0) {
+    // Still mark cancelled; process may already be gone (reconcile will agree).
+    killResults.push({ attempted: false, delivered: false, method: null });
+  }
+
+  appendLogLine(job.logFile, `Cancelled by user (pids: ${pids.join(", ") || "none"}).`);
 
   const completedAt = nowIso();
   const nextJob = {
@@ -1074,6 +1138,7 @@ async function handleCancel(argv) {
     status: "cancelled",
     phase: "cancelled",
     pid: null,
+    workerPid: null,
     completedAt,
     errorMessage: "Cancelled by user."
   };
@@ -1081,13 +1146,15 @@ async function handleCancel(argv) {
   writeJobFile(workspaceRoot, job.id, {
     ...existing,
     ...nextJob,
-    cancelledAt: completedAt
+    cancelledAt: completedAt,
+    killResults
   });
   upsertJob(workspaceRoot, {
     id: job.id,
     status: "cancelled",
     phase: "cancelled",
     pid: null,
+    workerPid: null,
     errorMessage: "Cancelled by user.",
     completedAt
   });
@@ -1095,7 +1162,9 @@ async function handleCancel(argv) {
   const payload = {
     jobId: job.id,
     status: "cancelled",
-    title: job.title
+    title: job.title,
+    pids,
+    killResults
   };
 
   outputCommandResult(payload, renderCancelReport(nextJob), options.json);

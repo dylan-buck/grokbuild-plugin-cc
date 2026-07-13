@@ -43,13 +43,69 @@ export function resolveClaudeSessionPath(cwd, options = {}) {
   return source;
 }
 
+function extractTextFromContent(content) {
+  if (content == null) {
+    return "";
+  }
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((block) => {
+        if (typeof block === "string") {
+          return block;
+        }
+        if (!block || typeof block !== "object") {
+          return "";
+        }
+        if (block.type === "text" && typeof block.text === "string") {
+          return block.text;
+        }
+        if (typeof block.text === "string") {
+          return block.text;
+        }
+        if (typeof block.content === "string") {
+          return block.content;
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (typeof content === "object") {
+    if (typeof content.text === "string") {
+      return content.text;
+    }
+    if (typeof content.content === "string") {
+      return content.content;
+    }
+    if (Array.isArray(content.content)) {
+      return extractTextFromContent(content.content);
+    }
+  }
+  return "";
+}
+
+function normalizeRole(role, type) {
+  const raw = String(role || type || "").toLowerCase();
+  if (raw.includes("assistant") || raw === "ai" || raw === "model") {
+    return "assistant";
+  }
+  if (raw.includes("user") || raw === "human") {
+    return "user";
+  }
+  if (raw.includes("system")) {
+    return "system";
+  }
+  return raw || "unknown";
+}
+
 /**
- * Build a best-effort handoff markdown from a Claude Code jsonl transcript.
- * Extracts recent user/assistant text blocks for pasting into Grok.
+ * Parse Claude Code jsonl into ordered chat messages (best-effort across formats).
  */
-export function buildHandoffMarkdown(sourcePath, options = {}) {
-  const maxMessages = options.maxMessages ?? 40;
-  const maxChars = options.maxChars ?? 120_000;
+export function extractClaudeMessages(sourcePath, options = {}) {
+  const maxMessages = options.maxMessages ?? 80;
   const lines = fs.readFileSync(sourcePath, "utf8").split(/\r?\n/).filter(Boolean);
   const messages = [];
 
@@ -61,57 +117,73 @@ export function buildHandoffMarkdown(sourcePath, options = {}) {
       continue;
     }
 
+    // Common Claude Code shapes
     const role = entry?.message?.role || entry?.role || entry?.type;
-    const content = entry?.message?.content ?? entry?.content ?? entry?.message;
-    if (!role || !content) {
+    const content =
+      entry?.message?.content ??
+      entry?.content ??
+      entry?.message ??
+      entry?.text ??
+      entry?.prompt ??
+      entry?.response;
+
+    // Skip tool-result only rows without text
+    if (entry?.type === "tool_result" || entry?.type === "tool_use") {
       continue;
     }
 
-    let text = "";
-    if (typeof content === "string") {
-      text = content;
-    } else if (Array.isArray(content)) {
-      text = content
-        .map((block) => {
-          if (typeof block === "string") {
-            return block;
-          }
-          if (block?.type === "text" && typeof block.text === "string") {
-            return block.text;
-          }
-          return "";
-        })
-        .filter(Boolean)
-        .join("\n");
-    } else if (typeof content === "object" && typeof content.text === "string") {
-      text = content.text;
-    }
-
-    text = text.trim();
+    const text = extractTextFromContent(content).trim();
     if (!text) {
       continue;
     }
 
-    const normalizedRole = String(role).toLowerCase().includes("assistant")
-      ? "assistant"
-      : String(role).toLowerCase().includes("user")
-        ? "user"
-        : String(role);
+    const normalizedRole = normalizeRole(role, entry?.type);
+    if (normalizedRole === "system" || normalizedRole === "unknown") {
+      continue;
+    }
+
+    // Drop pure command/tool dump noise
+    if (text.startsWith("tool_use") || text.startsWith("<tool")) {
+      continue;
+    }
 
     messages.push({ role: normalizedRole, text });
   }
 
-  const selected = messages.slice(-maxMessages);
+  return messages.slice(-maxMessages);
+}
+
+/**
+ * Build a best-effort handoff markdown from a Claude Code jsonl transcript.
+ */
+export function buildHandoffMarkdown(sourcePath, options = {}) {
+  const maxChars = options.maxChars ?? 120_000;
+  const messages = extractClaudeMessages(sourcePath, options);
+  const userCount = messages.filter((m) => m.role === "user").length;
+  const assistantCount = messages.filter((m) => m.role === "assistant").length;
+
   const parts = [
     "# Claude → Grok handoff",
     "",
     "Continue this work in Grok Build. Below is a condensed transcript from Claude Code.",
     "",
     `Source: ${sourcePath}`,
+    `Extracted turns: ${messages.length} (user=${userCount}, assistant=${assistantCount})`,
+    `Generated: ${new Date().toISOString()}`,
     ""
   ];
 
-  for (const message of selected) {
+  if (messages.length === 0) {
+    parts.push(
+      "## Note",
+      "",
+      "No user/assistant text turns could be extracted from this transcript.",
+      "Open the source JSONL or re-run transfer with a fuller Claude session.",
+      ""
+    );
+  }
+
+  for (const message of messages) {
     parts.push(`## ${message.role}`, "", message.text, "");
   }
 
@@ -119,7 +191,8 @@ export function buildHandoffMarkdown(sourcePath, options = {}) {
     "## Instructions for Grok",
     "",
     "Pick up from the latest user request. Prefer the smallest safe change that completes the task.",
-    "Do not re-litigate earlier resolved steps unless needed for correctness."
+    "Do not re-litigate earlier resolved steps unless needed for correctness.",
+    "If context looks incomplete, ask one clarifying question before large refactors."
   );
 
   let body = parts.join("\n");

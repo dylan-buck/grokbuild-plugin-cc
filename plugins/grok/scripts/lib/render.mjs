@@ -164,6 +164,12 @@ function pushJobDetails(lines, job, options = {}) {
 }
 
 export function renderSetupReport(report) {
+  const live =
+    report.auth?.liveVerified === true
+      ? "live verified"
+      : report.auth?.liveVerified === false
+        ? "live probe failed"
+        : "live probe skipped/not run";
   const lines = [
     "# Grok Setup",
     "",
@@ -173,6 +179,7 @@ export function renderSetupReport(report) {
     `- node: ${report.node.detail}`,
     `- grok: ${report.grok.detail}`,
     `- auth: ${report.auth.detail}`,
+    `- auth live: ${live}`,
     `- session runtime: ${report.sessionRuntime.label}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     ""

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import { terminateProcessTree } from "./lib/process.mjs";
 import { loadState, resolveStateFile, saveState } from "./lib/state.mjs";
@@ -29,39 +31,61 @@ function appendEnvVar(name, value) {
   fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export ${name}=${shellEscape(value)}\n`, "utf8");
 }
 
-function cleanupSessionJobs(cwd, sessionId) {
+/**
+ * On SessionEnd: kill still-running jobs for this Claude session, but **retain**
+ * finished job records so /grok:result still works after Claude exits.
+ */
+export function cleanupSessionJobs(cwd, sessionId) {
   if (!cwd || !sessionId) {
-    return;
+    return { killed: 0, retained: 0 };
   }
 
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const stateFile = resolveStateFile(workspaceRoot);
   if (!fs.existsSync(stateFile)) {
-    return;
+    return { killed: 0, retained: 0 };
   }
 
   const state = loadState(workspaceRoot);
-  const removedJobs = state.jobs.filter((job) => job.sessionId === sessionId);
-  if (removedJobs.length === 0) {
-    return;
+  const sessionJobs = state.jobs.filter((job) => job.sessionId === sessionId);
+  if (sessionJobs.length === 0) {
+    return { killed: 0, retained: 0 };
   }
 
-  for (const job of removedJobs) {
+  let killed = 0;
+  const nextJobs = state.jobs.map((job) => {
+    if (job.sessionId !== sessionId) {
+      return job;
+    }
     const stillRunning = job.status === "queued" || job.status === "running";
     if (!stillRunning) {
-      continue;
+      return job;
     }
     try {
       terminateProcessTree(job.pid ?? Number.NaN);
     } catch {
       // Ignore teardown failures during session shutdown.
     }
-  }
+    killed += 1;
+    return {
+      ...job,
+      status: "cancelled",
+      phase: "cancelled",
+      pid: null,
+      errorMessage: job.errorMessage || "Cancelled on Claude session end.",
+      completedAt: new Date().toISOString()
+    };
+  });
 
   saveState(workspaceRoot, {
     ...state,
-    jobs: state.jobs.filter((job) => job.sessionId !== sessionId)
+    jobs: nextJobs
   });
+
+  return {
+    killed,
+    retained: sessionJobs.length
+  };
 }
 
 function handleSessionStart(input) {
@@ -89,9 +113,14 @@ function main() {
   }
 }
 
-try {
-  main();
-} catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
+const isMain =
+  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isMain) {
+  try {
+    main();
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  }
 }

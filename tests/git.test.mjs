@@ -5,7 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { collectReviewContext, getWorkingTreeState, resolveReviewTarget } from "../plugins/grok/scripts/lib/git.mjs";
-import { initGitRepo, makeTempDir } from "./helpers.mjs";
+import { initGitRepo, makeTempDir, runCompanion } from "./helpers.mjs";
 
 test("resolveReviewTarget prefers dirty working tree", () => {
   const dir = initGitRepo(makeTempDir("grok-git-"));
@@ -23,6 +23,17 @@ test("collectReviewContext embeds untracked content", () => {
   const context = collectReviewContext(dir, target, { includeDiff: true });
   assert.ok(context.content.includes("new-file.js"));
   assert.ok(context.fileCount >= 1);
+});
+
+test("review errors on empty working tree", () => {
+  const dir = initGitRepo(makeTempDir("grok-empty-review-"));
+  const result = runCompanion(["review", "--json", "--scope", "working-tree"], {
+    cwd: dir,
+    pluginData: makeTempDir("pdata-empty-review-"),
+    env: { XAI_API_KEY: "k", FAKE_GROK_MODE: "review-json" }
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Nothing to review/i);
 });
 
 test("branch scope uses base ref", () => {

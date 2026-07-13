@@ -56,7 +56,8 @@ export function getGrokAuthStatus(cwd, env = process.env) {
       loggedIn: true,
       detail: "XAI_API_KEY is set",
       source: "env",
-      authMethod: "api-key"
+      authMethod: "api-key",
+      liveVerified: null
     };
   }
 
@@ -67,7 +68,8 @@ export function getGrokAuthStatus(cwd, env = process.env) {
       loggedIn: false,
       detail: "No auth.json and no XAI_API_KEY. Run `grok login`.",
       source: "missing",
-      authMethod: null
+      authMethod: null,
+      liveVerified: null
     };
   }
 
@@ -84,7 +86,8 @@ export function getGrokAuthStatus(cwd, env = process.env) {
         loggedIn: false,
         detail: "auth.json exists but is empty. Run `grok login`.",
         source: "auth.json",
-        authMethod: null
+        authMethod: null,
+        liveVerified: null
       };
     }
 
@@ -93,7 +96,8 @@ export function getGrokAuthStatus(cwd, env = process.env) {
       loggedIn: true,
       detail: "Cached credentials found in ~/.grok/auth.json",
       source: "auth.json",
-      authMethod: "session"
+      authMethod: "session",
+      liveVerified: null
     };
   } catch (error) {
     return {
@@ -101,7 +105,48 @@ export function getGrokAuthStatus(cwd, env = process.env) {
       loggedIn: false,
       detail: `Failed to read auth.json: ${error instanceof Error ? error.message : String(error)}`,
       source: "auth.json",
-      authMethod: null
+      authMethod: null,
+      liveVerified: null
+    };
+  }
+}
+
+/**
+ * Live probe: one tiny headless turn to verify credentials work.
+ * @returns {Promise<{ liveVerified: boolean, detail: string }>}
+ */
+export async function probeGrokAuthLive(cwd, options = {}) {
+  const env = options.env ?? process.env;
+  const timeoutMs = options.timeoutMs ?? 20_000;
+  const availability = getGrokAvailability(cwd, env);
+  if (!availability.available) {
+    return { liveVerified: false, detail: availability.detail };
+  }
+
+  try {
+    const result = await runHeadlessTurn({
+      prompt: "Reply with exactly: OK",
+      cwd,
+      env,
+      alwaysApprove: true,
+      noSubagents: true,
+      disableWebSearch: true,
+      maxTurns: 1,
+      disallowedTools: REVIEW_DISALLOWED_TOOLS,
+      timeoutMs
+    });
+    if (result.status === 0 && String(result.text ?? "").trim()) {
+      return { liveVerified: true, detail: "Live headless probe succeeded" };
+    }
+    const detail =
+      result.stderr ||
+      result.parseError ||
+      (result.text ? `Unexpected probe output: ${String(result.text).slice(0, 120)}` : "Live probe returned empty output");
+    return { liveVerified: false, detail };
+  } catch (error) {
+    return {
+      liveVerified: false,
+      detail: error instanceof Error ? error.message : String(error)
     };
   }
 }

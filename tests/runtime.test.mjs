@@ -12,7 +12,7 @@ test("setup --json reports ready with fake grok + auth", () => {
   fs.mkdirSync(path.join(home, ".grok"), { recursive: true });
   fs.writeFileSync(path.join(home, ".grok", "auth.json"), JSON.stringify({ token: "x" }), "utf8");
 
-  const result = runCompanion(["setup", "--json"], {
+  const result = runCompanion(["setup", "--json", "--skip-live-auth"], {
     cwd,
     pluginData,
     env: {
@@ -31,7 +31,7 @@ test("setup --json reports ready with fake grok + auth", () => {
 test("setup can enable review gate", () => {
   const cwd = initGitRepo(makeTempDir("grok-gate-"));
   const pluginData = makeTempDir("grok-pdata-gate-");
-  const result = runCompanion(["setup", "--enable-review-gate", "--json"], {
+  const result = runCompanion(["setup", "--enable-review-gate", "--json", "--skip-live-auth"], {
     cwd,
     pluginData,
     env: { XAI_API_KEY: "test-key" }

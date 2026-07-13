@@ -188,7 +188,7 @@ test("renderTransferResult covers imported and best-effort modes", () => {
 
 test("setup --json includes binary path detail", () => {
   const cwd = initGitRepo(makeTempDir("grok-setup2-"));
-  const result = runCompanion(["setup", "--json"], {
+  const result = runCompanion(["setup", "--json", "--skip-live-auth"], {
     cwd,
     pluginData: makeTempDir("grok-pdata-setup2-"),
     env: { XAI_API_KEY: "k" }
