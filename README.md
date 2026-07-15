@@ -49,7 +49,7 @@ Then run:
 /grok:setup
 ```
 
-`/grok:setup` will tell you whether Grok is ready. If Grok is missing, install [Grok Build](https://x.ai/cli) and ensure `grok` is on your `PATH` (or set `GROK_BIN`).
+`/grok:setup` will tell you whether Grok is ready. If Grok is missing, setup offers to run the official installer (`curl -fsSL https://x.ai/cli/install.sh | bash`); you can also install [Grok Build](https://x.ai/cli) yourself and ensure `grok` is on your `PATH` (or set `GROK_BIN`).
 
 If Grok is installed but not logged in yet, run:
 

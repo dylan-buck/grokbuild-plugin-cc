@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.2
+
+- `/grok:setup` now offers to run the official installer (`curl -fsSL https://x.ai/cli/install.sh | bash`, PowerShell variant on Windows) when the Grok CLI is missing, mirroring the Codex plugin's guided install.
+- `--effort` accepts model-specific effort ids (e.g. `deep`) in addition to the canonical `none`–`max` set; the Grok CLI validates them against the model catalog.
+- Dropped the phantom `~/.local/bin/grok` binary fallback — the official installer only ever uses `~/.grok/bin/grok` (use `PATH` or `GROK_BIN` for custom locations).
+
 ## 1.1.1
 
 Correctness pass against the actual open-source [Grok Build](https://github.com/xai-org/grok-build) CLI (commit `c1b5909`):

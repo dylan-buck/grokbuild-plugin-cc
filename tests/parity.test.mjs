@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import {
   extractMediaPaths,
   GROK_TOOL_IDS,
+  normalizeReasoningEffort,
   PROMPT_FILE_THRESHOLD_BYTES,
   READ_ONLY_DISALLOWED_TOOLS,
   resolveSessionMediaPaths,
@@ -32,6 +33,18 @@ test("review tool denylist uses Grok headless tool IDs", () => {
   assert.equal(READ_ONLY_DISALLOWED_TOOLS, [GROK_TOOL_IDS.edit, GROK_TOOL_IDS.write].join(","));
   // Read-only rescue keeps Imagine tools available for diagnosis/media-aware tasks.
   assert.doesNotMatch(READ_ONLY_DISALLOWED_TOOLS, /image_gen|image_edit/);
+});
+
+test("normalizeReasoningEffort accepts canonical and model-specific values", () => {
+  assert.equal(normalizeReasoningEffort("HIGH"), "high");
+  assert.equal(normalizeReasoningEffort("max"), "max");
+  assert.equal(normalizeReasoningEffort(null), null);
+  assert.equal(normalizeReasoningEffort("  "), null);
+  // Model-specific effort menu ids pass through for the CLI to validate.
+  assert.equal(normalizeReasoningEffort("deep"), "deep");
+  // Flag-looking or garbage input still errors.
+  assert.throws(() => normalizeReasoningEffort("--high"));
+  assert.throws(() => normalizeReasoningEffort("two words"));
 });
 
 test("review prefers structuredOutput over prose text", () => {

@@ -1,6 +1,6 @@
 {
   "name": "@dylan-buck/grokbuild-plugin-cc",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "private": true,
   "type": "module",
   "description": "Use Grok Build from Claude Code to review code, delegate tasks, and run Imagine image/video tools.",

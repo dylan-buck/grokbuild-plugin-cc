@@ -33,7 +33,7 @@ Command selection:
 - If the forwarded request includes `--fresh`, strip that token from the task text and do not add `--resume-last`.
 - `--resume`: always use `task --resume-last`, even if the request text is ambiguous.
 - `--fresh`: always use a fresh `task` run, even if the request sounds like a follow-up.
-- `--effort`: accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+- `--effort`: accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, plus model-specific effort ids (e.g. `deep`) that the Grok CLI validates against the model catalog.
 - `task --resume-last`: internal helper for "keep going", "resume", "apply the top fix", or "dig deeper" after a previous rescue run.
 - Image/Imagine generation for dedicated media requests should use the companion `imagine` / `imagine-video` commands (or ask the user to run `/grok:imagine`), not a free-form `task` prompt, so the official tool instructions are used.
 

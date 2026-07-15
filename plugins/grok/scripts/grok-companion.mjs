@@ -74,7 +74,7 @@ function printUsage() {
       "  node scripts/grok-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--skip-live-auth] [--json]",
       "  node scripts/grok-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>]",
       "  node scripts/grok-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [focus text]",
-      "  node scripts/grok-companion.mjs task [--background] [--write|--read] [--resume-last|--resume|--fresh] [--model <model>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--image <path>]... [--worktree] [--worktree-name <name>] [--worktree-ref <ref>] [--check] [--best-of-n <n>] [prompt]",
+      "  node scripts/grok-companion.mjs task [--background] [--write|--read] [--resume-last|--resume|--fresh] [--model <model>] [--effort <none|minimal|low|medium|high|xhigh|max|model-specific>] [--image <path>]... [--worktree] [--worktree-name <name>] [--worktree-ref <ref>] [--check] [--best-of-n <n>] [prompt]",
       "  node scripts/grok-companion.mjs imagine [--background] [--edit <image>]... [--model <model>] [--aspect <ratio>] [description]",
       "  node scripts/grok-companion.mjs imagine-video [--background] [--model <model>] [description]",
       "  node scripts/grok-companion.mjs transfer [--source <claude-jsonl>] [--json]",
@@ -190,7 +190,7 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
 
   const nextSteps = [];
   if (!grokStatus.available) {
-    nextSteps.push("Install Grok Build from https://x.ai/cli and ensure `grok` is on your PATH.");
+    nextSteps.push("Install Grok Build: `curl -fsSL https://x.ai/cli/install.sh | bash` (see https://x.ai/cli).");
     nextSteps.push("Or set GROK_BIN to the absolute path of the grok binary.");
   }
   if (grokStatus.available && !authStatus.loggedIn) {

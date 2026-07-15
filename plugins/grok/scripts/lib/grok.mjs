@@ -12,16 +12,12 @@ export function resolveGrokBinary(env = process.env) {
     return env.GROK_BIN.trim();
   }
 
+  // The official installer only ever places the binary at ~/.grok/bin/grok
+  // (a symlink managed by the auto-updater). Anything else is PATH or GROK_BIN.
   const home = env.HOME || os.homedir();
-  const candidates = [
-    path.join(home, ".grok", "bin", "grok"),
-    path.join(home, ".local", "bin", "grok")
-  ];
-
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
+  const installed = path.join(home, ".grok", "bin", "grok");
+  if (fs.existsSync(installed)) {
+    return installed;
   }
 
   return "grok";
@@ -155,16 +151,22 @@ export function normalizeReasoningEffort(effort) {
   if (effort == null) {
     return null;
   }
-  const normalized = String(effort).trim().toLowerCase();
-  if (!normalized) {
+  const raw = String(effort).trim();
+  if (!raw) {
     return null;
   }
-  if (!VALID_REASONING_EFFORTS.has(normalized)) {
-    throw new Error(
-      `Unsupported reasoning effort "${effort}". Use one of: none, minimal, low, medium, high, xhigh, max.`
-    );
+  const normalized = raw.toLowerCase();
+  if (VALID_REASONING_EFFORTS.has(normalized)) {
+    return normalized;
   }
-  return normalized;
+  // Grok also accepts per-model effort menu ids (e.g. `deep`) resolved against
+  // the model catalog; pass those through and let the CLI validate them.
+  if (/^[a-z0-9][a-z0-9._-]*$/i.test(raw)) {
+    return raw;
+  }
+  throw new Error(
+    `Invalid reasoning effort "${effort}". Use none, minimal, low, medium, high, xhigh, max, or a model-specific effort id.`
+  );
 }
 
 export function parseStructuredOutput(rawOutput, fallback = {}) {
