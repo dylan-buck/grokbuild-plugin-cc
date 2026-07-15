@@ -443,41 +443,21 @@ export function renderCancelReport(job) {
 }
 
 export function renderTransferResult(payload) {
-  const imported = payload.mode === "imported" || payload.import?.imported;
   const lines = [
-    imported ? "# Grok Transfer" : "# Grok Transfer (best-effort)",
-    ""
+    "# Grok Transfer (best-effort)",
+    "",
+    "Grok Build has no native Claude session importer, so a handoff package was written.",
+    "",
+    `Source Claude session: ${payload.sourcePath}`,
+    `Handoff file: ${payload.handoffPath}`,
+    "",
+    "Next steps:",
+    "1. Open a terminal in this repository",
+    "2. Run `grok --prompt-file <handoff-file>` or open `grok` and paste the handoff",
+    "3. Continue the work in Grok",
+    "",
+    "Tip: inside the Grok TUI, `/import-claude` imports Claude *settings* (permissions, MCP servers, hooks) — not sessions."
   ];
-
-  if (imported) {
-    lines.push("Claude session was imported into Grok via `grok import`.");
-    if (payload.import?.sessionId) {
-      lines.push(`Grok session ID: ${payload.import.sessionId}`);
-    }
-    if (payload.resumeCommand) {
-      lines.push(`Resume in Grok: ${payload.resumeCommand}`);
-    }
-    lines.push("", `Source Claude session: ${payload.sourcePath}`);
-    lines.push(`Handoff file (backup): ${payload.handoffPath}`);
-  } else {
-    lines.push(
-      "Native import was unavailable or skipped, so a handoff package was written.",
-      "You can continue in the Grok TUI with the handoff file, or upgrade Grok and retry import.",
-      "",
-      `Source Claude session: ${payload.sourcePath}`,
-      `Handoff file: ${payload.handoffPath}`
-    );
-    if (payload.import?.attempted) {
-      lines.push(`Import detail: ${payload.import.detail}`);
-    }
-    lines.push(
-      "",
-      "Next steps:",
-      "1. Open a terminal in this repository",
-      "2. Run `grok --prompt-file <handoff-file>` or open `grok` and paste the handoff",
-      "3. Continue the work in Grok"
-    );
-  }
 
   if (payload.sessionId) {
     lines.push("", `Claude session id: ${payload.sessionId}`);

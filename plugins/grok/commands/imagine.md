@@ -31,6 +31,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/grok-companion.mjs" imagine <flags-and-descr
 - If Grok is missing or unauthenticated, tell the user to run `/grok:setup`.
 - If no description is provided, ask for one.
 - Note: Imagine image generation may require SuperGrok (or equivalent plan access). The Grok CLI will report tier restrictions when applicable.
+- Note: `--model` selects the orchestrating Grok model. The image model itself is chosen by the `image_gen` tool.
 
 Examples of intended companion invocations:
 

@@ -248,9 +248,15 @@ export function readOutputSchema(schemaPath) {
 export const GROK_TOOL_IDS = {
   shell: "run_terminal_cmd",
   edit: "search_replace",
+  // OpenCode-derived create-file tool, injected when no other write tool is present.
+  write: "write",
   webSearch: "web_search",
   webFetch: "web_fetch",
+  // `Agent` (and `Agent(type)`) is a filter-list directive that blocks subagent
+  // spawning; the actual subagent tool id in the GrokBuild toolset is `task`.
   agent: "Agent",
+  subagentTask: "task",
+  todoWrite: "todo_write",
   read: "read_file",
   grep: "grep",
   list: "list_dir",
@@ -272,17 +278,20 @@ export const MEDIA_TOOL_IDS = [
 export const REVIEW_DISALLOWED_TOOLS = [
   GROK_TOOL_IDS.shell,
   GROK_TOOL_IDS.edit,
+  GROK_TOOL_IDS.write,
   GROK_TOOL_IDS.webSearch,
   GROK_TOOL_IDS.webFetch,
   GROK_TOOL_IDS.agent,
+  GROK_TOOL_IDS.subagentTask,
+  GROK_TOOL_IDS.todoWrite,
   GROK_TOOL_IDS.read,
   GROK_TOOL_IDS.grep,
   GROK_TOOL_IDS.list,
   ...MEDIA_TOOL_IDS
 ].join(",");
 
-/** Tools blocked for read-only investigation tasks (no file edits). Media tools stay available. */
-export const READ_ONLY_DISALLOWED_TOOLS = [GROK_TOOL_IDS.edit].join(",");
+/** Tools blocked for read-only investigation tasks (no file mutations). Media tools stay available. */
+export const READ_ONLY_DISALLOWED_TOOLS = [GROK_TOOL_IDS.edit, GROK_TOOL_IDS.write].join(",");
 
 /**
  * Allowlist for dedicated Imagine runs. Keeps the turn focused on media tools while
@@ -333,12 +342,26 @@ export function buildImagineEditInstruction(prompt, imagePaths) {
  * Official /imagine-video expansion (trimmed workflow from xai-grok-tools-api).
  * Video starts from an image — no pure text-to-video tool.
  */
-export function buildImagineVideoInstruction(prompt) {
+export function buildImagineVideoInstruction(prompt, imagePaths = []) {
+  const paths = (Array.isArray(imagePaths) ? imagePaths : [imagePaths])
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean);
+  // image_to_video takes filesystem paths/URLs, not ACP attachments, so
+  // reference images must be spelled out as absolute paths in the prompt.
+  const referenceBlock =
+    paths.length > 0
+      ? "## Source reference image(s)\n\n" +
+        "Use these absolute paths directly as the `image` input for `image_to_video` " +
+        "(or as `images` entries for `reference_to_video`). Do not regenerate them with `image_gen`:\n" +
+        paths.map((p) => `- ${p}`).join("\n") +
+        "\n\n"
+      : "";
   return (
     "# Imagine Video\n\n" +
     "Video starts from an image — there is no text-to-video tool. " +
     "Default to `image_to_video`; use `reference_to_video` only when the user " +
     "explicitly asks for it or a shot genuinely needs multiple reference images.\n\n" +
+    referenceBlock +
     "## Default: single clip\n\n" +
     "Unless the user asks for a long video, multiple scenes, or a multi-shot sequence, " +
     "generate **one** video:\n\n" +
@@ -404,14 +427,19 @@ export function buildAcpPromptJson(options = {}) {
   return JSON.stringify(buildAcpPromptBlocks(options));
 }
 
-/** Extract likely saved media paths from Grok text output. */
+/**
+ * Extract likely saved media paths from Grok text output.
+ * Media tools save under the session folder and tell the model to cite
+ * session-relative paths (`images/1.jpg`, `videos/1.mp4`), so both absolute
+ * and those session-relative forms are matched.
+ */
 export function extractMediaPaths(text) {
   const source = String(text ?? "");
   if (!source) {
     return [];
   }
   const matches = source.match(
-    /(?:^|[\s`"'(])((?:\/|[A-Za-z]:\\)[^\s`"'()]+?\.(?:png|jpe?g|gif|webp|mp4|webm|mov))(?=$|[\s`"'),])/gi
+    /(?:^|[\s`"'(])((?:(?:\/|[A-Za-z]:\\)[^\s`"'()]+?|(?:images|videos)\/[A-Za-z0-9._-]+)\.(?:png|jpe?g|gif|webp|mp4|webm|mov))(?=$|[\s`"'),.])/gi
   );
   if (!matches) {
     return [];
@@ -419,7 +447,7 @@ export function extractMediaPaths(text) {
   const seen = new Set();
   const paths = [];
   for (const raw of matches) {
-    const cleaned = raw.replace(/^[\s`"'(]+/, "").replace(/[`"'),]+$/, "");
+    const cleaned = raw.replace(/^[\s`"'(]+/, "").replace(/[`"'),.]+$/, "");
     if (!cleaned || seen.has(cleaned)) {
       continue;
     }
@@ -427,6 +455,73 @@ export function extractMediaPaths(text) {
     paths.push(cleaned);
   }
   return paths;
+}
+
+/**
+ * Locate the Grok session folder for a session id.
+ * Sessions live at $GROK_HOME/sessions/<encoded-cwd>/<session-id>/; the cwd
+ * encoding is an implementation detail, so scan one level for the id instead.
+ */
+export function locateGrokSessionDir(sessionId, env = process.env) {
+  const id = String(sessionId ?? "").trim();
+  if (!id) {
+    return null;
+  }
+  const sessionsRoot = path.join(authHome(env), "sessions");
+  let entries;
+  try {
+    entries = fs.readdirSync(sessionsRoot, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const candidate = path.join(sessionsRoot, entry.name, id);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve extracted media paths to absolute paths where possible.
+ * Session-relative paths (`images/1.jpg`) resolve against the session folder
+ * and are kept only when the file actually exists; absolute paths pass through.
+ */
+export function resolveSessionMediaPaths(mediaPaths, sessionId, env = process.env) {
+  const list = Array.isArray(mediaPaths) ? mediaPaths : [];
+  if (list.length === 0) {
+    return [];
+  }
+  let sessionDir = null;
+  let sessionDirResolved = false;
+  const seen = new Set();
+  const resolved = [];
+  for (const mediaPath of list) {
+    let absolute = mediaPath;
+    const isAbsolute = path.isAbsolute(mediaPath) || /^[A-Za-z]:\\/.test(mediaPath);
+    if (!isAbsolute) {
+      if (!sessionDirResolved) {
+        sessionDir = locateGrokSessionDir(sessionId, env);
+        sessionDirResolved = true;
+      }
+      if (!sessionDir) {
+        continue;
+      }
+      absolute = path.join(sessionDir, mediaPath);
+      if (!fs.existsSync(absolute)) {
+        continue;
+      }
+    }
+    if (!seen.has(absolute)) {
+      seen.add(absolute);
+      resolved.push(absolute);
+    }
+  }
+  return resolved;
 }
 
 /**
@@ -439,7 +534,7 @@ export function parseHeadlessStdout(rawStdout) {
     return { text: "", sessionId: null, parsed: null, parseError: null, events: [] };
   }
 
-  // Prefer single JSON object (classic --output-format json).
+  // Prefer single JSON object (classic --output-format json, pretty-printed).
   try {
     const parsed = JSON.parse(trimmed);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -454,6 +549,8 @@ export function parseHeadlessStdout(rawStdout) {
         sessionId: parsed.sessionId ?? parsed.session_id ?? null,
         parsed,
         parseError: null,
+        structuredOutput: parsed.structuredOutput ?? null,
+        structuredOutputError: parsed.structuredOutputError ?? null,
         events: []
       };
     }
@@ -466,6 +563,8 @@ export function parseHeadlessStdout(rawStdout) {
   let sessionId = null;
   let parseError = null;
   let lastObject = null;
+  let structuredOutput = null;
+  let structuredOutputError = null;
 
   for (const line of trimmed.split(/\r?\n/)) {
     const row = line.trim();
@@ -482,6 +581,8 @@ export function parseHeadlessStdout(rawStdout) {
         parseError = event.message;
       } else if (event?.type === "end") {
         sessionId = event.sessionId ?? event.session_id ?? sessionId;
+        structuredOutput = event.structuredOutput ?? structuredOutput;
+        structuredOutputError = event.structuredOutputError ?? structuredOutputError;
       }
       if (event?.sessionId || event?.session_id) {
         sessionId = event.sessionId ?? event.session_id ?? sessionId;
@@ -496,6 +597,8 @@ export function parseHeadlessStdout(rawStdout) {
     sessionId,
     parsed: lastObject,
     parseError,
+    structuredOutput,
+    structuredOutputError,
     events
   };
 }
@@ -505,9 +608,10 @@ export function parseHeadlessStdout(rawStdout) {
  *
  * Unlike Codex app-server (JSON-RPC over a long-lived process), Grok headless is one
  * process per turn. Large review prompts are written to a temp file and passed with
- * --prompt-file so we do not blow OS ARG_MAX. Multimodal prompts use --prompt-json
- * (ACP content blocks). Live progress uses --output-format streaming-json when a
- * progress reporter is attached (Codex-parity streaming feel without app-server).
+ * --prompt-file so we do not blow OS ARG_MAX. Multimodal prompts are ACP content
+ * blocks written to a .json prompt file (equivalent to --prompt-json, without argv
+ * limits). Live progress uses --output-format streaming-json when a progress
+ * reporter is attached (Codex-parity streaming feel without app-server).
  */
 export function runHeadlessTurn(options = {}) {
   const {
@@ -786,6 +890,8 @@ export function runHeadlessTurn(options = {}) {
           signal,
           parsed,
           parseError: parsed.message || parseError,
+          structuredOutput: parsedOut.structuredOutput ?? null,
+          structuredOutputError: parsedOut.structuredOutputError ?? null,
           mediaPaths,
           events: parsedOut.events
         });
@@ -801,6 +907,8 @@ export function runHeadlessTurn(options = {}) {
         signal,
         parsed,
         parseError,
+        structuredOutput: parsedOut.structuredOutput ?? null,
+        structuredOutputError: parsedOut.structuredOutputError ?? null,
         mediaPaths,
         events: parsedOut.events
       });

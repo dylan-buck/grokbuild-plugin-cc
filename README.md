@@ -198,7 +198,7 @@ Examples:
 
 Creates a best-effort handoff from the current Claude Code session so you can continue in Grok.
 
-It writes a handoff markdown package and attempts `grok import` when the local Grok CLI accepts the Claude transcript. When import is skipped or unsupported, use the handoff file with `grok --prompt-file` or paste it into the Grok TUI.
+It writes a handoff markdown package you can feed to Grok with `grok --prompt-file <handoff-file>` or paste into the Grok TUI. Grok Build has no native Claude *session* importer (its `/import-claude` TUI command imports settings — permissions, MCP servers, hooks — not transcripts), so the handoff package is the transfer mechanism.
 
 Examples:
 

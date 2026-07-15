@@ -31,6 +31,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/grok-companion.mjs" imagine-video <flags-and
 - If Grok is missing or unauthenticated, tell the user to run `/grok:setup`.
 - If no description is provided, ask for one.
 - Note: Imagine media generation may require SuperGrok (or equivalent plan access).
+- Note: `--image` references are resolved to absolute paths and handed to `image_to_video` as source frames.
+- Note: video runs are write-capable (shell access for FFmpeg assembly of multi-shot videos), like a default rescue run.
 
 Examples of intended companion invocations:
 

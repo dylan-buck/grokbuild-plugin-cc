@@ -152,9 +152,13 @@ export async function runStopGateReview(cwd, input = {}, options = {}) {
     timeoutMs: options.timeoutMs ?? 15 * 60 * 1000
   });
 
-  // Prefer structured verdict when schema worked.
+  // Prefer structured verdict when schema worked. Grok surfaces schema-constrained
+  // results in `structuredOutput`; fall back to parsing the final text.
   if (schema) {
-    const structured = parseStructuredOutput(result.text);
+    const structured =
+      result.structuredOutput && typeof result.structuredOutput === "object"
+        ? { parsed: result.structuredOutput, parseError: null }
+        : parseStructuredOutput(result.text);
     if (structured.parsed?.verdict === "approve") {
       return { ok: true, reason: null, skipped: false, rawOutput: result.text };
     }

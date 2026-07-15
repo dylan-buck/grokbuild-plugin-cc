@@ -3,7 +3,7 @@
 /**
  * Fake Grok CLI for unit tests.
  * Modes via FAKE_GROK_MODE:
- * - auto | review-json | task-ok | task-fail | empty | allow | block | auth-fail | echo-args | imagine-ok
+ * - auto | review-json | structured-only | task-ok | task-fail | empty | allow | block | auth-fail | echo-args | imagine-ok
  */
 
 import fs from "node:fs";
@@ -68,7 +68,8 @@ function emit(payload, code = 0) {
       `${JSON.stringify({
         type: "end",
         sessionId: payload.sessionId ?? "session-stream",
-        stopReason: payload.stopReason ?? "EndTurn"
+        stopReason: payload.stopReason ?? "EndTurn",
+        ...(payload.structuredOutput !== undefined ? { structuredOutput: payload.structuredOutput } : {})
       })}\n`
     );
     process.exit(code);
@@ -118,6 +119,33 @@ if (mode === "imagine-ok") {
     text: "Generated image saved to /tmp/fake-session/images/1.jpg",
     sessionId: "session-imagine-1",
     stopReason: "EndTurn"
+  });
+}
+
+// Mirrors real Grok --json-schema behavior: the JSON verdict arrives in
+// `structuredOutput` while `text` is ordinary prose.
+if (mode === "structured-only") {
+  emit({
+    text: "Review complete. See structured output.",
+    sessionId: "session-structured-1",
+    stopReason: "EndTurn",
+    structuredOutput: {
+      verdict: "needs-attention",
+      summary: "Structured-only issue found.",
+      findings: [
+        {
+          severity: "high",
+          title: "Structured-only finding",
+          body: "Delivered via structuredOutput, not text.",
+          file: "src/example.js",
+          line_start: 1,
+          line_end: 2,
+          confidence: 0.9,
+          recommendation: "Handle structuredOutput."
+        }
+      ],
+      next_steps: []
+    }
   });
 }
 

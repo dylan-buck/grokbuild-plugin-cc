@@ -22,6 +22,7 @@ import {
   probeGrokAuthLive,
   readOutputSchema,
   READ_ONLY_DISALLOWED_TOOLS,
+  resolveSessionMediaPaths,
   REVIEW_DISALLOWED_TOOLS,
   runHeadlessTurn
 } from "./lib/grok.mjs";
@@ -382,10 +383,21 @@ async function executeReviewRun(request) {
     onProgress: request.onProgress
   });
 
-  const parsed = parseStructuredOutput(result.text, {
-    status: result.status,
-    failureMessage: result.parseError || result.stderr || "Grok review failed."
-  });
+  // Grok surfaces schema-constrained results in `structuredOutput`; prefer it
+  // over re-parsing the final text, which may be prose around the JSON.
+  const parsed =
+    result.structuredOutput && typeof result.structuredOutput === "object"
+      ? {
+          parsed: result.structuredOutput,
+          parseError: null,
+          rawOutput: result.text || JSON.stringify(result.structuredOutput),
+          status: result.status
+        }
+      : parseStructuredOutput(result.text, {
+          status: result.status,
+          failureMessage:
+            result.structuredOutputError || result.parseError || result.stderr || "Grok review failed."
+        });
 
   const payload = {
     review: reviewName,
@@ -438,6 +450,15 @@ function normalizeImagePaths(cwd, imagePaths) {
     .map((value) => String(value ?? "").trim())
     .filter(Boolean)
     .map((value) => path.resolve(cwd, value));
+}
+
+function ensureImageFilesExist(paths, label) {
+  for (const imagePath of paths) {
+    if (!fs.existsSync(imagePath)) {
+      throw new Error(`${label} not found: ${imagePath}`);
+    }
+  }
+  return paths;
 }
 
 function appendAspectHint(prompt, aspect) {
@@ -513,7 +534,9 @@ async function executeTaskRun(request) {
 
   const rawOutput = typeof result.text === "string" ? result.text : "";
   const failureMessage = result.status !== 0 ? result.stderr || result.parseError || "Grok task failed." : "";
-  const mediaPaths = Array.isArray(result.mediaPaths) ? result.mediaPaths : [];
+  // Media tools cite session-relative paths (images/1.jpg); resolve them against
+  // the Grok session folder so the user gets clickable absolute paths.
+  const mediaPaths = resolveSessionMediaPaths(result.mediaPaths, result.sessionId);
   const rendered = renderTaskResult({
     rawOutput,
     failureMessage,
@@ -547,7 +570,10 @@ async function executeImagineRun(request) {
     throw new Error("Provide an image description for /grok:imagine.");
   }
 
-  const editPaths = normalizeImagePaths(request.cwd, request.editPaths);
+  const editPaths = ensureImageFilesExist(
+    normalizeImagePaths(request.cwd, request.editPaths),
+    "--edit source image"
+  );
   let prompt =
     editPaths.length > 0
       ? buildImagineEditInstruction(description, editPaths)
@@ -573,15 +599,22 @@ async function executeImagineVideoRun(request) {
     throw new Error("Provide a video description for /grok:imagine-video.");
   }
 
+  // image_to_video consumes filesystem paths, not ACP attachments, so reference
+  // images go into the instruction text instead of being base64-attached.
+  const referencePaths = ensureImageFilesExist(
+    normalizeImagePaths(request.cwd, request.imagePaths),
+    "--image reference image"
+  );
+
   return executeTaskRun({
     ...request,
-    prompt: buildImagineVideoInstruction(description),
+    prompt: buildImagineVideoInstruction(description, referencePaths),
     write: true, // assembly may need shell/ffmpeg + project file writes
     resumeLast: false,
     tools: null,
     disallowedTools: null,
     kind: "imagine-video",
-    imagePaths: normalizeImagePaths(request.cwd, request.imagePaths)
+    imagePaths: null
   });
 }
 
@@ -879,7 +912,9 @@ async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["model", "effort", "cwd", "prompt-file", "worktree-ref", "worktree-name", "best-of-n"],
     multiValueOptions: ["image"],
-    booleanOptions: ["json", "write", "read", "resume-last", "resume", "fresh", "background", "check", "worktree"],
+    // `wait` is a Claude-side execution flag; accept and ignore it so an
+    // un-stripped `--wait` never leaks into the prompt text.
+    booleanOptions: ["json", "write", "read", "resume-last", "resume", "fresh", "background", "wait", "check", "worktree"],
     aliasMap: {
       m: "model"
     }
@@ -965,7 +1000,7 @@ async function handleImagine(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["model", "cwd", "aspect"],
     multiValueOptions: ["edit"],
-    booleanOptions: ["json", "background"],
+    booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
     }
@@ -1035,7 +1070,7 @@ async function handleImagineVideo(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["model", "cwd"],
     multiValueOptions: ["image"],
-    booleanOptions: ["json", "background"],
+    booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
     }
@@ -1098,98 +1133,6 @@ async function handleImagineVideo(argv) {
   );
 }
 
-async function tryGrokImport(sourcePath, cwd, options = {}) {
-  const availability = getGrokAvailability(cwd);
-  if (!availability.available) {
-    return { attempted: false, imported: false, detail: availability.detail, sessionId: null };
-  }
-
-  const timeoutMs = Math.max(1_000, Number(options.timeoutMs) || 30_000);
-
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (value) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      resolve(value);
-    };
-
-    const child = spawn(availability.binary, ["import", "--json", sourcePath], {
-      cwd,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true
-    });
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => {
-      try {
-        terminateProcessTree(child.pid ?? Number.NaN);
-      } catch {
-        // ignore
-      }
-      finish({
-        attempted: true,
-        imported: false,
-        detail: `import timed out after ${timeoutMs}ms`,
-        sessionId: null,
-        raw: null
-      });
-    }, timeoutMs);
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString("utf8");
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      const lines = stdout
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean);
-      let last = null;
-      for (const line of lines) {
-        try {
-          last = JSON.parse(line);
-        } catch {
-          // ignore non-JSON lines
-        }
-      }
-      const outcome = last?.outcome ?? null;
-      // Only treat explicit success outcomes as imported. A UUID-looking sessionId alone
-      // is not enough (Grok may echo the source path or skip with an error).
-      const imported =
-        code === 0 &&
-        outcome !== "skipped" &&
-        (outcome === "imported" || outcome === "ok" || outcome === "created");
-      finish({
-        attempted: true,
-        imported,
-        detail: last?.error || stderr.trim() || (imported ? "imported" : `import exit ${code}${outcome ? ` (${outcome})` : ""}`),
-        sessionId:
-          imported && typeof last?.sessionId === "string" && !last.sessionId.endsWith(".jsonl")
-            ? last.sessionId
-            : null,
-        raw: last
-      });
-    });
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      finish({
-        attempted: true,
-        imported: false,
-        detail: error.message,
-        sessionId: null,
-        raw: null
-      });
-    });
-  });
-}
-
 async function handleTransfer(argv) {
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd", "source"],
@@ -1206,16 +1149,13 @@ async function handleTransfer(argv) {
   const handoffPath = path.join(handoffDir, `claude-handoff-${sessionId}-${Date.now()}.md`);
   fs.writeFileSync(handoffPath, handoffBody, "utf8");
 
-  // Prefer native `grok import` when the CLI accepts the Claude jsonl.
-  const importResult = await tryGrokImport(sourcePath, workspaceRoot);
-
+  // Grok Build has no session importer (open-source CLI confirms: `/import-claude`
+  // in the TUI imports settings only), so transfer is always a handoff package.
   const payload = {
     sourcePath,
     handoffPath,
     sessionId,
-    mode: importResult.imported ? "imported" : "best-effort",
-    import: importResult,
-    resumeCommand: importResult.sessionId ? `grok --resume ${importResult.sessionId}` : null
+    mode: "best-effort"
   };
   outputCommandResult(payload, renderTransferResult(payload), options.json);
 }

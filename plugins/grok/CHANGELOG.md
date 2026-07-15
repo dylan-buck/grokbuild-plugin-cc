@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.1
+
+Correctness pass against the actual open-source [Grok Build](https://github.com/xai-org/grok-build) CLI (commit `c1b5909`):
+
+- **Transfer**: removed the speculative `grok import` attempt — the CLI has no `import` subcommand (`/import-claude` in the TUI imports settings, not sessions). Transfer is a handoff package, as documented.
+- **Structured output**: `--json-schema` results arrive in the CLI's `structuredOutput` field; reviews and the stop gate now prefer it over re-parsing the final text.
+- **Tool registry**: added the OpenCode-derived `write` (create-file) tool and the real subagent tool id `task`. Read-only rescue now blocks `write` alongside `search_replace`; the review denylist blocks `write`, `task`, and `todo_write`.
+- **Imagine Video**: `--image` references are embedded as absolute paths in the instruction (the `image_to_video` tool consumes filesystem paths, not prompt attachments) and validated to exist; `--edit` sources on `/grok:imagine` are validated too.
+- **Media paths**: session-relative citations (`images/1.jpg`) now resolve to absolute paths via the Grok session folder (`$GROK_HOME/sessions/…/<session-id>/`) when the file exists.
+- `task` / `imagine` / `imagine-video` accept and ignore a stray Claude-side `--wait` instead of leaking it into the prompt.
+
 ## 1.1.0
 
 Parity pass against the Codex Claude Code plugin surface, grounded in open-source [Grok Build](https://github.com/xai-org/grok-build):

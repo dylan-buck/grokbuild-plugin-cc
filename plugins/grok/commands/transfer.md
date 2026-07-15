@@ -8,4 +8,4 @@ allowed-tools: Bash(node:*)
 !`node "${CLAUDE_PLUGIN_ROOT}/scripts/grok-companion.mjs" transfer "$ARGUMENTS"`
 
 Present the command output to the user without paraphrasing.
-Explain that this is best-effort (Grok has no native Claude session importer yet).
+Explain that this is best-effort: Grok Build has no native Claude session importer (its `/import-claude` TUI command imports settings, not transcripts), so the handoff file is the transfer mechanism.

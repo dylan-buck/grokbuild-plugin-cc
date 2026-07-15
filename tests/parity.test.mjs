@@ -5,9 +5,11 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import {
+  extractMediaPaths,
   GROK_TOOL_IDS,
   PROMPT_FILE_THRESHOLD_BYTES,
   READ_ONLY_DISALLOWED_TOOLS,
+  resolveSessionMediaPaths,
   REVIEW_DISALLOWED_TOOLS
 } from "../plugins/grok/scripts/lib/grok.mjs";
 import { reconcileStaleJob } from "../plugins/grok/scripts/lib/job-control.mjs";
@@ -21,11 +23,52 @@ test("review tool denylist uses Grok headless tool IDs", () => {
   assert.match(REVIEW_DISALLOWED_TOOLS, new RegExp(GROK_TOOL_IDS.agent));
   assert.match(REVIEW_DISALLOWED_TOOLS, new RegExp(GROK_TOOL_IDS.imageGen));
   assert.match(REVIEW_DISALLOWED_TOOLS, new RegExp(GROK_TOOL_IDS.imageEdit));
+  // The OpenCode-derived create-file tool and the real subagent tool id.
+  assert.match(REVIEW_DISALLOWED_TOOLS, /\bwrite\b/);
+  assert.match(REVIEW_DISALLOWED_TOOLS, /\btask\b/);
   assert.doesNotMatch(REVIEW_DISALLOWED_TOOLS, /run_terminal_command/);
   assert.doesNotMatch(REVIEW_DISALLOWED_TOOLS, /\bWrite\b|\bEdit\b|\bBash\b/);
-  assert.equal(READ_ONLY_DISALLOWED_TOOLS, GROK_TOOL_IDS.edit);
+  // Read-only rescue blocks both file-mutation tools (search_replace + write).
+  assert.equal(READ_ONLY_DISALLOWED_TOOLS, [GROK_TOOL_IDS.edit, GROK_TOOL_IDS.write].join(","));
   // Read-only rescue keeps Imagine tools available for diagnosis/media-aware tasks.
   assert.doesNotMatch(READ_ONLY_DISALLOWED_TOOLS, /image_gen|image_edit/);
+});
+
+test("review prefers structuredOutput over prose text", () => {
+  const cwd = initGitRepo(makeTempDir("grok-structured-"));
+  fs.writeFileSync(path.join(cwd, "x.js"), "1\n", "utf8");
+  const result = runCompanion(["review", "--json"], {
+    cwd,
+    pluginData: makeTempDir("grok-pdata-structured-"),
+    env: { FAKE_GROK_MODE: "structured-only", XAI_API_KEY: "k" }
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.result.verdict, "needs-attention");
+  assert.equal(payload.result.findings[0].title, "Structured-only finding");
+});
+
+test("extractMediaPaths matches absolute and session-relative media paths", () => {
+  const text = [
+    "Saved to /tmp/foo/images/1.jpg and also cited as images/1.jpg.",
+    "Video at videos/2.mp4. Ignore src/images.js and images/readme.txt."
+  ].join("\n");
+  assert.deepEqual(extractMediaPaths(text), ["/tmp/foo/images/1.jpg", "images/1.jpg", "videos/2.mp4"]);
+});
+
+test("resolveSessionMediaPaths resolves session-relative paths against GROK_HOME", () => {
+  const grokHome = makeTempDir("grok-home-media-");
+  const sessionDir = path.join(grokHome, "sessions", "encoded-cwd", "sess-123");
+  fs.mkdirSync(path.join(sessionDir, "images"), { recursive: true });
+  fs.writeFileSync(path.join(sessionDir, "images", "1.jpg"), "fake", "utf8");
+
+  const env = { GROK_HOME: grokHome };
+  const resolved = resolveSessionMediaPaths(["images/1.jpg", "images/missing.jpg", "/abs/other.png"], "sess-123", env);
+  assert.deepEqual(resolved, [path.join(sessionDir, "images", "1.jpg"), "/abs/other.png"]);
+
+  // Unknown session id: relative paths drop, absolute paths survive.
+  const unresolved = resolveSessionMediaPaths(["images/1.jpg", "/abs/other.png"], "nope", env);
+  assert.deepEqual(unresolved, ["/abs/other.png"]);
 });
 
 test("adversarial-review accepts focus text and returns findings", () => {
@@ -136,7 +179,7 @@ setTimeout(() => {
   assert.equal(cancelled.status, "cancelled");
 });
 
-test("transfer writes handoff and attempts import", () => {
+test("transfer writes handoff (no native session import exists)", () => {
   const cwd = initGitRepo(makeTempDir("grok-xfer-"));
   const pluginData = makeTempDir("grok-pdata-xfer-");
   const home = makeTempDir("grok-home-xfer-");
@@ -164,32 +207,23 @@ test("transfer writes handoff and attempts import", () => {
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.sourcePath, fs.realpathSync(source));
   assert.ok(fs.existsSync(payload.handoffPath));
-  assert.ok(payload.import?.attempted === true || payload.mode === "best-effort");
+  assert.equal(payload.mode, "best-effort");
   const handoff = fs.readFileSync(payload.handoffPath, "utf8");
   assert.match(handoff, /fix the bug/);
 });
 
-test("renderTransferResult covers imported and best-effort modes", () => {
-  const best = renderTransferResult({
+test("renderTransferResult renders the handoff package", () => {
+  const rendered = renderTransferResult({
     mode: "best-effort",
     sourcePath: "/tmp/a.jsonl",
     handoffPath: "/tmp/h.md",
-    sessionId: "abc",
-    import: { attempted: true, detail: "skipped" }
+    sessionId: "abc"
   });
-  assert.match(best, /best-effort/i);
-  assert.match(best, /Import detail/);
-
-  const imported = renderTransferResult({
-    mode: "imported",
-    sourcePath: "/tmp/a.jsonl",
-    handoffPath: "/tmp/h.md",
-    sessionId: "abc",
-    import: { imported: true, sessionId: "grok-sess" },
-    resumeCommand: "grok --resume grok-sess"
-  });
-  assert.match(imported, /imported into Grok/i);
-  assert.match(imported, /grok --resume/);
+  assert.match(rendered, /best-effort/i);
+  assert.match(rendered, /no native Claude session importer/i);
+  assert.match(rendered, /grok --prompt-file/);
+  assert.match(rendered, /import-claude/);
+  assert.match(rendered, /Claude session id: abc/);
 });
 
 test("setup --json includes binary path detail", () => {
