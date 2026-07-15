@@ -11,8 +11,12 @@ import { buildHandoffMarkdown, resolveClaudeSessionPath } from "./lib/claude-ses
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import {
+  buildImagineEditInstruction,
+  buildImagineInstruction,
+  buildImagineVideoInstruction,
   getGrokAuthStatus,
   getGrokAvailability,
+  IMAGINE_ALLOWED_TOOLS,
   normalizeReasoningEffort,
   parseStructuredOutput,
   probeGrokAuthLive,
@@ -69,7 +73,9 @@ function printUsage() {
       "  node scripts/grok-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--skip-live-auth] [--json]",
       "  node scripts/grok-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>]",
       "  node scripts/grok-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [focus text]",
-      "  node scripts/grok-companion.mjs task [--background] [--write|--read] [--resume-last|--resume|--fresh] [--model <model>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--worktree] [--worktree-name <name>] [--worktree-ref <ref>] [--check] [--best-of-n <n>] [prompt]",
+      "  node scripts/grok-companion.mjs task [--background] [--write|--read] [--resume-last|--resume|--fresh] [--model <model>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--image <path>]... [--worktree] [--worktree-name <name>] [--worktree-ref <ref>] [--check] [--best-of-n <n>] [prompt]",
+      "  node scripts/grok-companion.mjs imagine [--background] [--edit <image>]... [--model <model>] [--aspect <ratio>] [description]",
+      "  node scripts/grok-companion.mjs imagine-video [--background] [--model <model>] [description]",
       "  node scripts/grok-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/grok-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/grok-companion.mjs result [job-id] [--json]",
@@ -423,13 +429,33 @@ async function executeReviewRun(request) {
   };
 }
 
+function normalizeImagePaths(cwd, imagePaths) {
+  if (!imagePaths) {
+    return [];
+  }
+  const list = Array.isArray(imagePaths) ? imagePaths : [imagePaths];
+  return list
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean)
+    .map((value) => path.resolve(cwd, value));
+}
+
+function appendAspectHint(prompt, aspect) {
+  const ratio = String(aspect ?? "").trim();
+  if (!ratio) {
+    return prompt;
+  }
+  return `${prompt}\n\nPreferred aspect_ratio for image_gen: ${ratio}`;
+}
+
 async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
   ensureGrokAvailable(request.cwd);
 
   const taskMetadata = buildTaskRunMetadata({
     prompt: request.prompt,
-    resumeLast: request.resumeLast
+    resumeLast: request.resumeLast,
+    kind: request.kind
   });
 
   let resumeSessionId = null;
@@ -450,6 +476,14 @@ async function executeTaskRun(request) {
 
   const prompt = request.prompt?.trim() || (resumeSessionId ? DEFAULT_CONTINUE_PROMPT : "");
   const write = Boolean(request.write);
+  const imagePaths = normalizeImagePaths(request.cwd, request.imagePaths);
+  const tools = request.tools ?? null;
+  const disallowedTools =
+    request.disallowedTools !== undefined
+      ? request.disallowedTools
+      : write
+        ? null
+        : READ_ONLY_DISALLOWED_TOOLS;
 
   request.onProgress?.({
     message: resumeSessionId ? `Resuming Grok session ${resumeSessionId}.` : "Starting Grok task.",
@@ -459,14 +493,16 @@ async function executeTaskRun(request) {
 
   const result = await runHeadlessTurn({
     prompt,
+    imagePaths: imagePaths.length > 0 ? imagePaths : null,
     cwd: workspaceRoot,
     model: request.model,
     effort: request.effort,
     // Always unattended (Codex approvalPolicy "never"). Read-only still needs tool auto-approval
     // so diagnosis tasks do not hang waiting for a TTY permission prompt.
     alwaysApprove: true,
-    // Read-only tasks still need tools for investigation; block edits only.
-    disallowedTools: write ? null : READ_ONLY_DISALLOWED_TOOLS,
+    // Read-only tasks still need tools for investigation; block edits only. Media/Imagine tools remain available.
+    tools,
+    disallowedTools,
     resumeSessionId,
     worktree: request.worktree ?? null,
     worktreeRef: request.worktreeRef ?? null,
@@ -477,16 +513,19 @@ async function executeTaskRun(request) {
 
   const rawOutput = typeof result.text === "string" ? result.text : "";
   const failureMessage = result.status !== 0 ? result.stderr || result.parseError || "Grok task failed." : "";
+  const mediaPaths = Array.isArray(result.mediaPaths) ? result.mediaPaths : [];
   const rendered = renderTaskResult({
     rawOutput,
-    failureMessage
+    failureMessage,
+    mediaPaths
   });
 
   const payload = {
     status: result.status,
     threadId: result.sessionId,
     rawOutput,
-    resumeSessionId
+    resumeSessionId,
+    mediaPaths
   };
 
   return {
@@ -502,6 +541,50 @@ async function executeTaskRun(request) {
   };
 }
 
+async function executeImagineRun(request) {
+  const description = String(request.prompt ?? "").trim();
+  if (!description) {
+    throw new Error("Provide an image description for /grok:imagine.");
+  }
+
+  const editPaths = normalizeImagePaths(request.cwd, request.editPaths);
+  let prompt =
+    editPaths.length > 0
+      ? buildImagineEditInstruction(description, editPaths)
+      : buildImagineInstruction(description);
+  prompt = appendAspectHint(prompt, request.aspect);
+
+  return executeTaskRun({
+    ...request,
+    prompt,
+    write: false,
+    resumeLast: false,
+    tools: IMAGINE_ALLOWED_TOOLS,
+    disallowedTools: null,
+    kind: "imagine",
+    // Reference paths are already embedded in the edit instruction; do not also base64-attach.
+    imagePaths: null
+  });
+}
+
+async function executeImagineVideoRun(request) {
+  const description = String(request.prompt ?? "").trim();
+  if (!description) {
+    throw new Error("Provide a video description for /grok:imagine-video.");
+  }
+
+  return executeTaskRun({
+    ...request,
+    prompt: buildImagineVideoInstruction(description),
+    write: true, // assembly may need shell/ffmpeg + project file writes
+    resumeLast: false,
+    tools: null,
+    disallowedTools: null,
+    kind: "imagine-video",
+    imagePaths: normalizeImagePaths(request.cwd, request.imagePaths)
+  });
+}
+
 function buildReviewJobMetadata(reviewName, target) {
   return {
     kind: reviewName === "Adversarial Review" ? "adversarial-review" : "review",
@@ -510,11 +593,24 @@ function buildReviewJobMetadata(reviewName, target) {
   };
 }
 
-function buildTaskRunMetadata({ prompt, resumeLast = false }) {
+function buildTaskRunMetadata({ prompt, resumeLast = false, kind = null }) {
   if (!resumeLast && String(prompt ?? "").includes(STOP_REVIEW_TASK_MARKER)) {
     return {
       title: "Grok Stop Gate Review",
       summary: "Stop-gate review of previous Claude turn"
+    };
+  }
+
+  if (kind === "imagine") {
+    return {
+      title: "Grok Imagine",
+      summary: shorten(prompt || "Generate image")
+    };
+  }
+  if (kind === "imagine-video") {
+    return {
+      title: "Grok Imagine Video",
+      summary: shorten(prompt || "Generate video")
     };
   }
 
@@ -533,6 +629,12 @@ function renderQueuedTaskLaunch(payload) {
 function getJobKindLabel(kind, jobClass) {
   if (kind === "adversarial-review") {
     return "adversarial-review";
+  }
+  if (kind === "imagine") {
+    return "imagine";
+  }
+  if (kind === "imagine-video") {
+    return "imagine-video";
   }
   return jobClass === "review" ? "review" : "rescue";
 }
@@ -585,7 +687,13 @@ function buildTaskRequest({
   worktree = null,
   worktreeRef = null,
   check = false,
-  bestOfN = null
+  bestOfN = null,
+  imagePaths = null,
+  tools = null,
+  disallowedTools = undefined,
+  kind = null,
+  editPaths = null,
+  aspect = null
 }) {
   return {
     cwd,
@@ -598,7 +706,13 @@ function buildTaskRequest({
     worktree,
     worktreeRef,
     check,
-    bestOfN
+    bestOfN,
+    imagePaths,
+    tools,
+    disallowedTools,
+    kind,
+    editPaths,
+    aspect
   };
 }
 
@@ -764,6 +878,7 @@ async function handleReview(argv) {
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["model", "effort", "cwd", "prompt-file", "worktree-ref", "worktree-name", "best-of-n"],
+    multiValueOptions: ["image"],
     booleanOptions: ["json", "write", "read", "resume-last", "resume", "fresh", "background", "check", "worktree"],
     aliasMap: {
       m: "model"
@@ -775,6 +890,7 @@ async function handleTask(argv) {
   const model = options.model ?? null;
   const effort = normalizeReasoningEffort(options.effort);
   const prompt = readTaskPrompt(cwd, options, positionals);
+  const imagePaths = options.image ?? null;
 
   const resumeLast = Boolean(options["resume-last"] || options.resume);
   const fresh = Boolean(options.fresh);
@@ -814,7 +930,8 @@ async function handleTask(argv) {
       worktree,
       worktreeRef,
       check,
-      bestOfN
+      bestOfN,
+      imagePaths
     });
     const { payload } = enqueueBackgroundJob(cwd, job, request, "task-worker");
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
@@ -837,6 +954,144 @@ async function handleTask(argv) {
         worktreeRef,
         check,
         bestOfN,
+        imagePaths,
+        onProgress: progress
+      }),
+    { json: options.json }
+  );
+}
+
+async function handleImagine(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["model", "cwd", "aspect"],
+    multiValueOptions: ["edit"],
+    booleanOptions: ["json", "background"],
+    aliasMap: {
+      m: "model"
+    }
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const prompt = positionals.join(" ").trim() || readStdinIfPiped();
+  if (!prompt) {
+    throw new Error("Provide an image description, e.g. /grok:imagine a golden sunset over the ocean");
+  }
+
+  const taskMetadata = buildTaskRunMetadata({ prompt, kind: "imagine" });
+  const request = buildTaskRequest({
+    cwd,
+    model: options.model ?? null,
+    prompt,
+    write: false,
+    resumeLast: false,
+    jobId: null,
+    editPaths: options.edit ?? null,
+    aspect: options.aspect ?? null,
+    kind: "imagine",
+    tools: IMAGINE_ALLOWED_TOOLS,
+    disallowedTools: null
+  });
+
+  if (options.background) {
+    ensureGrokAvailable(cwd);
+    const job = createCompanionJob({
+      prefix: "imagine",
+      kind: "imagine",
+      title: taskMetadata.title,
+      workspaceRoot,
+      jobClass: "task",
+      summary: taskMetadata.summary,
+      write: false
+    });
+    request.jobId = job.id;
+    const { payload } = enqueueBackgroundJob(cwd, job, request, "imagine-worker");
+    outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
+    return;
+  }
+
+  const job = createCompanionJob({
+    prefix: "imagine",
+    kind: "imagine",
+    title: taskMetadata.title,
+    workspaceRoot,
+    jobClass: "task",
+    summary: taskMetadata.summary,
+    write: false
+  });
+  request.jobId = job.id;
+  await runForegroundCommand(
+    job,
+    (progress) =>
+      executeImagineRun({
+        ...request,
+        onProgress: progress
+      }),
+    { json: options.json }
+  );
+}
+
+async function handleImagineVideo(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["model", "cwd"],
+    multiValueOptions: ["image"],
+    booleanOptions: ["json", "background"],
+    aliasMap: {
+      m: "model"
+    }
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const prompt = positionals.join(" ").trim() || readStdinIfPiped();
+  if (!prompt) {
+    throw new Error("Provide a video description, e.g. /grok:imagine-video a cat playing piano in a jazz club");
+  }
+
+  const taskMetadata = buildTaskRunMetadata({ prompt, kind: "imagine-video" });
+  const request = buildTaskRequest({
+    cwd,
+    model: options.model ?? null,
+    prompt,
+    write: true,
+    resumeLast: false,
+    jobId: null,
+    imagePaths: options.image ?? null,
+    kind: "imagine-video"
+  });
+
+  if (options.background) {
+    ensureGrokAvailable(cwd);
+    const job = createCompanionJob({
+      prefix: "imgvid",
+      kind: "imagine-video",
+      title: taskMetadata.title,
+      workspaceRoot,
+      jobClass: "task",
+      summary: taskMetadata.summary,
+      write: true
+    });
+    request.jobId = job.id;
+    const { payload } = enqueueBackgroundJob(cwd, job, request, "imagine-video-worker");
+    outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
+    return;
+  }
+
+  const job = createCompanionJob({
+    prefix: "imgvid",
+    kind: "imagine-video",
+    title: taskMetadata.title,
+    workspaceRoot,
+    jobClass: "task",
+    summary: taskMetadata.summary,
+    write: true
+  });
+  request.jobId = job.id;
+  await runForegroundCommand(
+    job,
+    (progress) =>
+      executeImagineVideoRun({
+        ...request,
         onProgress: progress
       }),
     { json: options.json }
@@ -1182,11 +1437,23 @@ async function main() {
     case "task":
       await handleTask(argv);
       break;
+    case "imagine":
+      await handleImagine(argv);
+      break;
+    case "imagine-video":
+      await handleImagineVideo(argv);
+      break;
     case "transfer":
       await handleTransfer(argv);
       break;
     case "task-worker":
       await handleWorker(argv, executeTaskRun);
+      break;
+    case "imagine-worker":
+      await handleWorker(argv, executeImagineRun);
+      break;
+    case "imagine-video-worker":
+      await handleWorker(argv, executeImagineVideoRun);
       break;
     case "review-worker":
       await handleWorker(argv, executeReviewRun);

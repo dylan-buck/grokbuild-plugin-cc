@@ -1,7 +1,7 @@
 {
   "name": "grok",
-  "version": "1.0.1",
-  "description": "Use Grok Build from Claude Code to review code or delegate tasks.",
+  "version": "1.1.0",
+  "description": "Use Grok Build from Claude Code to review code, delegate tasks, and run Imagine image/video tools.",
   "author": {
     "name": "dylan-buck"
   }

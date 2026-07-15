@@ -10,12 +10,18 @@ they already have.
 - `/grok:review` for a normal read-only Grok review
 - `/grok:adversarial-review` for a steerable challenge review
 - `/grok:rescue`, `/grok:transfer`, `/grok:status`, `/grok:result`, and `/grok:cancel` to delegate work, hand off sessions, and manage background jobs
+- `/grok:imagine` and `/grok:imagine-video` for Grok Build Imagine (image_gen / image_to_video)
+- Multimodal rescue via `--image <path>` (ACP content blocks / vision)
+
+Command surface mirrors the [OpenAI Codex plugin for Claude Code](https://github.com/openai/codex-plugin-cc), adapted to Grok Build's headless CLI (open-sourced at [xai-org/grok-build](https://github.com/xai-org/grok-build)).
 
 ## Requirements
 
 - **Grok Build access** (xAI account / Grok subscription or `XAI_API_KEY`).
   - Usage will contribute to your Grok usage limits. [Learn more](https://x.ai/cli).
+  - Imagine image/video tools may require SuperGrok (or equivalent plan access).
 - **Node.js 18.18 or later**
+- **Grok Build CLI** on `PATH` (or `GROK_BIN`) — install from [x.ai/cli](https://x.ai/cli)
 
 ## Install
 
@@ -155,6 +161,38 @@ Ask Grok to redesign the database connection to be more resilient.
 - follow-up rescue requests can continue the latest Grok task in the repo
 - rescue defaults to write-capable work; use `--read` for diagnosis-only
 - Grok-native extras: `--worktree`, `--worktree-name`, `--worktree-ref`, `--check`, `--best-of-n`
+- attach images for vision-aware tasks with one or more `--image <path>` flags
+- write-capable and read-only rescue runs keep Imagine tools (`image_gen`, `image_edit`, …) available; use `/grok:imagine` for dedicated generation
+
+### `/grok:imagine`
+
+Generate an image with Grok Build Imagine (`image_gen`), using the same official instruction as the Grok TUI `/imagine` command.
+
+Examples:
+
+```bash
+/grok:imagine a golden sunset over a calm ocean
+/grok:imagine --aspect 16:9 hero banner of a rocket launch
+/grok:imagine --edit ./reference.png make it watercolor
+/grok:imagine --background neon cyberpunk city skyline
+```
+
+Use `--edit <path>` (repeatable) to run `image_edit` against source images instead of a pure text-to-image generation.
+
+> [!NOTE]
+> Image generation may require SuperGrok. If your plan does not include Imagine, Grok returns an upgrade message.
+
+### `/grok:imagine-video`
+
+Generate a short video. Grok stages a first frame with `image_gen` (or uses `--image` references) and animates it with `image_to_video`, matching the Grok TUI `/imagine-video` workflow.
+
+Examples:
+
+```bash
+/grok:imagine-video a cat playing piano in a jazz club
+/grok:imagine-video --image ./frame.png gentle camera push-in
+/grok:imagine-video --background neon motorcycle chase through rain
+```
 
 ### `/grok:transfer`
 

@@ -19,9 +19,13 @@ test("review tool denylist uses Grok headless tool IDs", () => {
   assert.match(REVIEW_DISALLOWED_TOOLS, new RegExp(GROK_TOOL_IDS.shell));
   assert.match(REVIEW_DISALLOWED_TOOLS, new RegExp(GROK_TOOL_IDS.edit));
   assert.match(REVIEW_DISALLOWED_TOOLS, new RegExp(GROK_TOOL_IDS.agent));
+  assert.match(REVIEW_DISALLOWED_TOOLS, new RegExp(GROK_TOOL_IDS.imageGen));
+  assert.match(REVIEW_DISALLOWED_TOOLS, new RegExp(GROK_TOOL_IDS.imageEdit));
   assert.doesNotMatch(REVIEW_DISALLOWED_TOOLS, /run_terminal_command/);
   assert.doesNotMatch(REVIEW_DISALLOWED_TOOLS, /\bWrite\b|\bEdit\b|\bBash\b/);
   assert.equal(READ_ONLY_DISALLOWED_TOOLS, GROK_TOOL_IDS.edit);
+  // Read-only rescue keeps Imagine tools available for diagnosis/media-aware tasks.
+  assert.doesNotMatch(READ_ONLY_DISALLOWED_TOOLS, /image_gen|image_edit/);
 });
 
 test("adversarial-review accepts focus text and returns findings", () => {
@@ -209,6 +213,8 @@ test("companion help lists all subcommands", () => {
     "review",
     "adversarial-review",
     "task",
+    "imagine",
+    "imagine-video",
     "transfer",
     "status",
     "result",

@@ -22,3 +22,4 @@ When the helper returns Grok output:
 - If the helper reports that setup or authentication is required, direct the user to `/grok:setup` and do not improvise alternate auth flows.
 - Keep job IDs, session IDs, and `grok --resume` hints intact.
 - For background launches, point the user at `/grok:status` and `/grok:result`.
+- For Imagine / media results, preserve any saved image or video paths exactly (session-relative paths like `images/1.jpg` or absolute paths). Prefer the paths Grok reported over paraphrasing "an image was created".

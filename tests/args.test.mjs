@@ -21,3 +21,14 @@ test("splitRawArgumentString respects quotes", () => {
   const tokens = splitRawArgumentString(`--base main "focus on auth"`);
   assert.deepEqual(tokens, ["--base", "main", "focus on auth"]);
 });
+
+test("parseArgs collects multi-value options", () => {
+  const { options, positionals } = parseArgs(
+    ["--image", "a.png", "--image=b.jpg", "describe these"],
+    {
+      multiValueOptions: ["image"]
+    }
+  );
+  assert.deepEqual(options.image, ["a.png", "b.jpg"]);
+  assert.deepEqual(positionals, ["describe these"]);
+});

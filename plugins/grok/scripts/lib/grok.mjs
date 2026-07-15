@@ -241,7 +241,10 @@ export function readOutputSchema(schemaPath) {
   return JSON.parse(fs.readFileSync(schemaPath, "utf8"));
 }
 
-/** Canonical Grok headless tool IDs (see user-guide/14-headless-mode.md). */
+/**
+ * Canonical Grok headless tool IDs from open-source Grok Build
+ * (xai-org/grok-build tools + user-guide/14-headless-mode.md).
+ */
 export const GROK_TOOL_IDS = {
   shell: "run_terminal_cmd",
   edit: "search_replace",
@@ -250,8 +253,20 @@ export const GROK_TOOL_IDS = {
   agent: "Agent",
   read: "read_file",
   grep: "grep",
-  list: "list_dir"
+  list: "list_dir",
+  imageGen: "image_gen",
+  imageEdit: "image_edit",
+  imageToVideo: "image_to_video",
+  referenceToVideo: "reference_to_video"
 };
+
+/** Media / Imagine tools (optional SuperGrok feature set). */
+export const MEDIA_TOOL_IDS = [
+  GROK_TOOL_IDS.imageGen,
+  GROK_TOOL_IDS.imageEdit,
+  GROK_TOOL_IDS.imageToVideo,
+  GROK_TOOL_IDS.referenceToVideo
+];
 
 /** Tools blocked for embedded-diff reviews (text-in/text-out). */
 export const REVIEW_DISALLOWED_TOOLS = [
@@ -262,25 +277,243 @@ export const REVIEW_DISALLOWED_TOOLS = [
   GROK_TOOL_IDS.agent,
   GROK_TOOL_IDS.read,
   GROK_TOOL_IDS.grep,
-  GROK_TOOL_IDS.list
+  GROK_TOOL_IDS.list,
+  ...MEDIA_TOOL_IDS
 ].join(",");
 
-/** Tools blocked for read-only investigation tasks (no file edits). */
+/** Tools blocked for read-only investigation tasks (no file edits). Media tools stay available. */
 export const READ_ONLY_DISALLOWED_TOOLS = [GROK_TOOL_IDS.edit].join(",");
+
+/**
+ * Allowlist for dedicated Imagine runs. Keeps the turn focused on media tools while
+ * still allowing light web grounding (official /imagine injects only image_gen, but
+ * the model may want web_search for factual subjects).
+ */
+export const IMAGINE_ALLOWED_TOOLS = [
+  GROK_TOOL_IDS.imageGen,
+  GROK_TOOL_IDS.imageEdit,
+  GROK_TOOL_IDS.imageToVideo,
+  GROK_TOOL_IDS.referenceToVideo,
+  GROK_TOOL_IDS.webSearch,
+  GROK_TOOL_IDS.webFetch,
+  GROK_TOOL_IDS.read
+].join(",");
 
 /** Prefer --prompt-file over -p once the prompt risks OS argv limits or shell issues. */
 export const PROMPT_FILE_THRESHOLD_BYTES = 24 * 1024;
+
+/** Official /imagine expansion from xai-grok-tools-api (verbatim prompt contract). */
+export function buildImagineInstruction(prompt) {
+  return (
+    "Call the image_gen tool immediately, passing the user's prompt below " +
+    "verbatim — do not rewrite, embellish, or expand it. " +
+    "After the tool completes, briefly acknowledge and mention " +
+    "where the image was saved.\n\n" +
+    `Prompt: ${prompt}`
+  );
+}
+
+/** image_edit variant when the user supplies a source image path. */
+export function buildImagineEditInstruction(prompt, imagePaths) {
+  const paths = (Array.isArray(imagePaths) ? imagePaths : [imagePaths])
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean);
+  const pathList = paths.map((p) => `- ${p}`).join("\n");
+  return (
+    "Call the image_edit tool immediately with the source image path(s) below " +
+    "and the user's prompt verbatim — do not rewrite, embellish, or expand the prompt. " +
+    "Pass each path as an entry in the image parameter (absolute filesystem paths). " +
+    "After the tool completes, briefly acknowledge and mention where the image was saved.\n\n" +
+    `Source image path(s):\n${pathList}\n\n` +
+    `Prompt: ${prompt}`
+  );
+}
+
+/**
+ * Official /imagine-video expansion (trimmed workflow from xai-grok-tools-api).
+ * Video starts from an image — no pure text-to-video tool.
+ */
+export function buildImagineVideoInstruction(prompt) {
+  return (
+    "# Imagine Video\n\n" +
+    "Video starts from an image — there is no text-to-video tool. " +
+    "Default to `image_to_video`; use `reference_to_video` only when the user " +
+    "explicitly asks for it or a shot genuinely needs multiple reference images.\n\n" +
+    "## Default: single clip\n\n" +
+    "Unless the user asks for a long video, multiple scenes, or a multi-shot sequence, " +
+    "generate **one** video:\n\n" +
+    "1. Create a source image with `image_gen` that stages the first frame " +
+    "(composition, subject, lighting).\n" +
+    "2. Call `image_to_video` with that image and a short prompt describing the motion " +
+    "or camera move (1–2 sentences, present tense).\n" +
+    "3. After the tool completes, mention the saved file path so the user can find it.\n\n" +
+    "## Longer / multi-shot videos\n\n" +
+    "Plan shots, generate each source image, animate with `image_to_video`, and assemble with " +
+    "FFmpeg stream copy when needed. Prefer 6s clips. Keep resolution/frame-rate consistent.\n\n" +
+    `User prompt: ${prompt}`
+  );
+}
+
+const IMAGE_MIME_BY_EXT = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".bmp": "image/bmp",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff"
+};
+
+export function guessImageMimeType(filePath) {
+  const ext = path.extname(String(filePath ?? "")).toLowerCase();
+  return IMAGE_MIME_BY_EXT[ext] || "application/octet-stream";
+}
+
+/**
+ * Build ACP content blocks for `--prompt-json` (array form).
+ * Image blocks use the agent-client-protocol shape: { type, mimeType, data }.
+ */
+export function buildAcpPromptBlocks({ text, imagePaths = [] } = {}) {
+  const blocks = [];
+  const trimmed = String(text ?? "").trim();
+  if (trimmed) {
+    blocks.push({ type: "text", text: trimmed });
+  }
+
+  for (const imagePath of imagePaths) {
+    const resolved = path.resolve(String(imagePath));
+    if (!fs.existsSync(resolved)) {
+      throw new Error(`Image not found: ${resolved}`);
+    }
+    const data = fs.readFileSync(resolved).toString("base64");
+    blocks.push({
+      type: "image",
+      mimeType: guessImageMimeType(resolved),
+      data
+    });
+  }
+
+  if (blocks.length === 0) {
+    throw new Error("Prompt content is empty (need text and/or images).");
+  }
+  return blocks;
+}
+
+export function buildAcpPromptJson(options = {}) {
+  return JSON.stringify(buildAcpPromptBlocks(options));
+}
+
+/** Extract likely saved media paths from Grok text output. */
+export function extractMediaPaths(text) {
+  const source = String(text ?? "");
+  if (!source) {
+    return [];
+  }
+  const matches = source.match(
+    /(?:^|[\s`"'(])((?:\/|[A-Za-z]:\\)[^\s`"'()]+?\.(?:png|jpe?g|gif|webp|mp4|webm|mov))(?=$|[\s`"'),])/gi
+  );
+  if (!matches) {
+    return [];
+  }
+  const seen = new Set();
+  const paths = [];
+  for (const raw of matches) {
+    const cleaned = raw.replace(/^[\s`"'(]+/, "").replace(/[`"'),]+$/, "");
+    if (!cleaned || seen.has(cleaned)) {
+      continue;
+    }
+    seen.add(cleaned);
+    paths.push(cleaned);
+  }
+  return paths;
+}
+
+/**
+ * Parse headless stdout for either final `json` or NDJSON `streaming-json`.
+ * @returns {{ text: string, sessionId: string | null, parsed: object | null, parseError: string | null, events: object[] }}
+ */
+export function parseHeadlessStdout(rawStdout) {
+  const trimmed = String(rawStdout ?? "").trim();
+  if (!trimmed) {
+    return { text: "", sessionId: null, parsed: null, parseError: null, events: [] };
+  }
+
+  // Prefer single JSON object (classic --output-format json).
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      let text = "";
+      if (typeof parsed.text === "string") {
+        text = parsed.text;
+      } else if (parsed.type === "error" && typeof parsed.message === "string") {
+        text = parsed.message;
+      }
+      return {
+        text,
+        sessionId: parsed.sessionId ?? parsed.session_id ?? null,
+        parsed,
+        parseError: null,
+        events: []
+      };
+    }
+  } catch {
+    // Fall through to NDJSON streaming-json.
+  }
+
+  const events = [];
+  const textChunks = [];
+  let sessionId = null;
+  let parseError = null;
+  let lastObject = null;
+
+  for (const line of trimmed.split(/\r?\n/)) {
+    const row = line.trim();
+    if (!row) {
+      continue;
+    }
+    try {
+      const event = JSON.parse(row);
+      events.push(event);
+      lastObject = event;
+      if (event?.type === "text" && typeof event.data === "string") {
+        textChunks.push(event.data);
+      } else if (event?.type === "error" && typeof event.message === "string") {
+        parseError = event.message;
+      } else if (event?.type === "end") {
+        sessionId = event.sessionId ?? event.session_id ?? sessionId;
+      }
+      if (event?.sessionId || event?.session_id) {
+        sessionId = event.sessionId ?? event.session_id ?? sessionId;
+      }
+    } catch (error) {
+      parseError = error.message;
+    }
+  }
+
+  return {
+    text: textChunks.join(""),
+    sessionId,
+    parsed: lastObject,
+    parseError,
+    events
+  };
+}
 
 /**
  * Run a single headless Grok turn and return structured result.
  *
  * Unlike Codex app-server (JSON-RPC over a long-lived process), Grok headless is one
  * process per turn. Large review prompts are written to a temp file and passed with
- * --prompt-file so we do not blow OS ARG_MAX.
+ * --prompt-file so we do not blow OS ARG_MAX. Multimodal prompts use --prompt-json
+ * (ACP content blocks). Live progress uses --output-format streaming-json when a
+ * progress reporter is attached (Codex-parity streaming feel without app-server).
  */
 export function runHeadlessTurn(options = {}) {
   const {
-    prompt,
+    prompt = null,
+    promptJson = null,
+    imagePaths = null,
     cwd = process.cwd(),
     model = null,
     effort = null,
@@ -302,10 +535,25 @@ export function runHeadlessTurn(options = {}) {
     env = process.env,
     onProgress = null,
     timeoutMs = 0,
-    promptFileThresholdBytes = PROMPT_FILE_THRESHOLD_BYTES
+    promptFileThresholdBytes = PROMPT_FILE_THRESHOLD_BYTES,
+    // Auto: streaming when onProgress is set; otherwise final json.
+    outputFormat = null
   } = options;
 
-  if (!prompt || !String(prompt).trim()) {
+  const imageList = Array.isArray(imagePaths)
+    ? imagePaths.map((value) => String(value ?? "").trim()).filter(Boolean)
+    : [];
+
+  let resolvedPromptJson = promptJson;
+  if (!resolvedPromptJson && imageList.length > 0) {
+    resolvedPromptJson = buildAcpPromptJson({
+      text: prompt ?? "",
+      imagePaths: imageList
+    });
+  }
+
+  const promptText = resolvedPromptJson ? null : prompt == null ? "" : String(prompt);
+  if (!resolvedPromptJson && !String(promptText ?? "").trim()) {
     throw new Error("A prompt is required for this Grok run.");
   }
 
@@ -317,12 +565,25 @@ export function runHeadlessTurn(options = {}) {
   }
 
   const binary = availability.binary;
-  const promptText = String(prompt);
   const tempFiles = [];
-  const args = ["--output-format", "json", "--no-auto-update"];
+  const useStreaming =
+    outputFormat === "streaming-json" || (outputFormat == null && typeof onProgress === "function");
+  const args = ["--output-format", useStreaming ? "streaming-json" : "json", "--no-auto-update"];
 
-  // Large embedded diffs (reviews) must not go through argv.
-  if (Buffer.byteLength(promptText, "utf8") >= promptFileThresholdBytes) {
+  if (resolvedPromptJson) {
+    const jsonText =
+      typeof resolvedPromptJson === "string" ? resolvedPromptJson : JSON.stringify(resolvedPromptJson);
+    // Multimodal / ACP payloads routinely exceed argv limits; always use a temp file.
+    // .json extension makes Grok parse content blocks (see HeadlessPrompt::from_file).
+    const promptPath = path.join(
+      os.tmpdir(),
+      `grok-plugin-prompt-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+    );
+    fs.writeFileSync(promptPath, jsonText, "utf8");
+    tempFiles.push(promptPath);
+    args.push("--prompt-file", promptPath);
+  } else if (Buffer.byteLength(promptText, "utf8") >= promptFileThresholdBytes) {
+    // Large embedded diffs (reviews) must not go through argv.
     const promptPath = path.join(
       os.tmpdir(),
       `grok-plugin-prompt-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`
@@ -412,6 +673,7 @@ export function runHeadlessTurn(options = {}) {
     let stderr = "";
     let settled = false;
     let timer = null;
+    let stdoutCarry = "";
 
     if (timeoutMs > 0) {
       timer = setTimeout(() => {
@@ -429,7 +691,50 @@ export function runHeadlessTurn(options = {}) {
     }
 
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString("utf8");
+      const textChunk = chunk.toString("utf8");
+      stdout += textChunk;
+      if (!useStreaming || !onProgress) {
+        return;
+      }
+      stdoutCarry += textChunk;
+      const lines = stdoutCarry.split(/\r?\n/);
+      stdoutCarry = lines.pop() ?? "";
+      for (const line of lines) {
+        const row = line.trim();
+        if (!row) {
+          continue;
+        }
+        try {
+          const event = JSON.parse(row);
+          if (event?.type === "thought" && typeof event.data === "string" && event.data.trim()) {
+            onProgress({
+              message: event.data.slice(0, 200),
+              phase: "thinking",
+              threadId: event.sessionId ?? null
+            });
+          } else if (event?.type === "text" && typeof event.data === "string" && event.data.trim()) {
+            onProgress({
+              message: event.data.slice(0, 200),
+              phase: "running",
+              threadId: event.sessionId ?? null
+            });
+          } else if (event?.type === "end") {
+            onProgress({
+              message: "Grok turn finished.",
+              phase: "finalizing",
+              threadId: event.sessionId ?? null
+            });
+          } else if (event?.type === "error" && typeof event.message === "string") {
+            onProgress({
+              message: event.message.slice(0, 200),
+              phase: "running",
+              stderrMessage: event.message.slice(0, 200)
+            });
+          }
+        } catch {
+          // ignore partial/non-json lines while streaming
+        }
+      }
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString("utf8");
@@ -463,26 +768,12 @@ export function runHeadlessTurn(options = {}) {
       onProgress?.({ message: "Grok turn finished.", phase: "finalizing" });
 
       const trimmedStdout = stdout.trim();
-      let parsed = null;
-      let text = trimmedStdout;
-      let sessionId = null;
-      let parseError = null;
-
-      if (trimmedStdout) {
-        try {
-          parsed = JSON.parse(trimmedStdout);
-          if (parsed && typeof parsed === "object") {
-            if (typeof parsed.text === "string") {
-              text = parsed.text;
-            } else if (parsed.type === "error" && typeof parsed.message === "string") {
-              text = parsed.message;
-            }
-            sessionId = parsed.sessionId ?? parsed.session_id ?? null;
-          }
-        } catch (error) {
-          parseError = error.message;
-        }
-      }
+      const parsedOut = parseHeadlessStdout(trimmedStdout);
+      const text = parsedOut.text || "";
+      const sessionId = parsedOut.sessionId;
+      const parsed = parsedOut.parsed;
+      const parseError = parsedOut.parseError;
+      const mediaPaths = extractMediaPaths(text);
 
       const status = code === 0 ? 0 : code ?? 1;
       if (parsed?.type === "error") {
@@ -494,7 +785,9 @@ export function runHeadlessTurn(options = {}) {
           stderr: stderr.trim(),
           signal,
           parsed,
-          parseError: parsed.message || parseError
+          parseError: parsed.message || parseError,
+          mediaPaths,
+          events: parsedOut.events
         });
         return;
       }
@@ -507,7 +800,9 @@ export function runHeadlessTurn(options = {}) {
         stderr: stderr.trim(),
         signal,
         parsed,
-        parseError
+        parseError,
+        mediaPaths,
+        events: parsedOut.events
       });
     });
   });

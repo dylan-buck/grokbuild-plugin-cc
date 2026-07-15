@@ -37,6 +37,8 @@ Forwarding rules:
 - If the user is clearly asking to continue prior Grok work in this repository, such as "continue", "keep going", "resume", "apply the top fix", or "dig deeper", add `--resume-last` unless `--fresh` is present.
 - Otherwise forward the task as a fresh `task` run.
 - Preserve the user's task text as-is apart from stripping routing flags.
+- If the request includes one or more `--image <path>` flags, pass each through to `task` for multimodal vision.
+- For dedicated image generation only, prefer the companion `imagine` command (or tell the user to use `/grok:imagine`) instead of a free-form task.
 - Return the stdout of the `grok-companion` command exactly as-is.
 - If the Bash call fails or Grok cannot be invoked, return nothing.
 

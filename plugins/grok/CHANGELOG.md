@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.0
+
+Parity pass against the Codex Claude Code plugin surface, grounded in open-source [Grok Build](https://github.com/xai-org/grok-build):
+
+- **`/grok:imagine`** — official `image_gen` instruction (same expansion as Grok TUI `/imagine`); optional `--edit <image>` for `image_edit`, `--aspect`, background jobs
+- **`/grok:imagine-video`** — official `image_to_video` workflow instruction (same expansion as Grok TUI `/imagine-video`)
+- **Multimodal rescue** — repeatable `--image <path>` on `task` / `/grok:rescue` attaches ACP content blocks via `--prompt-json` / `.json` prompt files
+- **Streaming progress** — headless runs with a progress reporter use `--output-format streaming-json` (thought/text/end events) for live job updates closer to Codex app-server progress
+- **Tool registry** — `GROK_TOOL_IDS` includes media tools; reviews denylist Imagine tools; read-only rescue keeps them available
+- Media path extraction + result rendering for generated assets
+- Skills/agents updated for Imagine routing and image attachments
+
 ## 1.0.1
 
 - `/grok:review` now accepts optional focus text (Grok reviews are prompt-based; no need to force adversarial-review for ordinary focus).

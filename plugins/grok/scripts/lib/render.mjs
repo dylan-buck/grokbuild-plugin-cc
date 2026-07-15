@@ -276,12 +276,28 @@ export function renderReviewResult(parsedResult, meta) {
 
 export function renderTaskResult(parsedResult) {
   const rawOutput = typeof parsedResult?.rawOutput === "string" ? parsedResult.rawOutput : "";
+  const mediaPaths = Array.isArray(parsedResult?.mediaPaths)
+    ? parsedResult.mediaPaths.filter((value) => typeof value === "string" && value.trim())
+    : [];
+
   if (rawOutput) {
-    return rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    const body = rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    if (mediaPaths.length === 0) {
+      return body;
+    }
+    // Avoid duplicating paths already present in the model text.
+    const missing = mediaPaths.filter((mediaPath) => !body.includes(mediaPath));
+    if (missing.length === 0) {
+      return body;
+    }
+    return `${body.trimEnd()}\n\nMedia files:\n${missing.map((mediaPath) => `- ${mediaPath}`).join("\n")}\n`;
   }
 
   const message = String(parsedResult?.failureMessage ?? "").trim() || "Grok did not return a final message.";
-  return `${message}\n`;
+  if (mediaPaths.length === 0) {
+    return `${message}\n`;
+  }
+  return `${message}\n\nMedia files:\n${mediaPaths.map((mediaPath) => `- ${mediaPath}`).join("\n")}\n`;
 }
 
 export function renderStatusReport(report) {

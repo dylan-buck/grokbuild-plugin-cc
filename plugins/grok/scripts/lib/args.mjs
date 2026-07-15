@@ -1,6 +1,18 @@
+function assignValueOption(options, key, value, multiValueOptions) {
+  if (multiValueOptions.has(key)) {
+    if (!Array.isArray(options[key])) {
+      options[key] = [];
+    }
+    options[key].push(value);
+    return;
+  }
+  options[key] = value;
+}
+
 export function parseArgs(argv, config = {}) {
   const valueOptions = new Set(config.valueOptions ?? []);
   const booleanOptions = new Set(config.booleanOptions ?? []);
+  const multiValueOptions = new Set(config.multiValueOptions ?? []);
   const aliasMap = config.aliasMap ?? {};
   const options = {};
   const positionals = [];
@@ -33,12 +45,12 @@ export function parseArgs(argv, config = {}) {
         continue;
       }
 
-      if (valueOptions.has(key)) {
+      if (valueOptions.has(key) || multiValueOptions.has(key)) {
         const nextValue = inlineValue ?? argv[index + 1];
         if (nextValue === undefined) {
           throw new Error(`Missing value for --${rawKey}`);
         }
-        options[key] = nextValue;
+        assignValueOption(options, key, nextValue, multiValueOptions);
         if (inlineValue === undefined) {
           index += 1;
         }
@@ -57,12 +69,12 @@ export function parseArgs(argv, config = {}) {
       continue;
     }
 
-    if (valueOptions.has(key)) {
+    if (valueOptions.has(key) || multiValueOptions.has(key)) {
       const nextValue = argv[index + 1];
       if (nextValue === undefined) {
         throw new Error(`Missing value for -${shortKey}`);
       }
-      options[key] = nextValue;
+      assignValueOption(options, key, nextValue, multiValueOptions);
       index += 1;
       continue;
     }

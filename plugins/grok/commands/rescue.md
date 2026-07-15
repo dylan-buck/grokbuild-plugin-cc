@@ -1,6 +1,6 @@
 ---
 description: Delegate investigation, an explicit fix request, or follow-up rescue work to the Grok rescue subagent
-argument-hint: "[--background|--wait] [--resume|--fresh] [--read] [--model <model>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--worktree] [--worktree-name <name>] [--worktree-ref <ref>] [--check] [--best-of-n <n>] [what Grok should investigate, solve, or continue]"
+argument-hint: "[--background|--wait] [--resume|--fresh] [--read] [--model <model>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--image <path>]... [--worktree] [--worktree-name <name>] [--worktree-ref <ref>] [--check] [--best-of-n <n>] [what Grok should investigate, solve, or continue]"
 allowed-tools: Bash(node:*), AskUserQuestion, Agent
 ---
 

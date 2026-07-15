@@ -23,10 +23,17 @@ Good task prompts:
 - State constraints: "no dependency upgrades", "keep public API stable".
 - Define done: "tests pass", "minimal diff", "explain root cause".
 
+Media / vision:
+- When the user attaches or references image files for understanding or editing, prefer companion `--image <path>` flags over embedding huge base64 blobs in the prompt text.
+- For pure image generation ("make a logo", "generate a hero image"), prefer `/grok:imagine` rather than a free-form rescue task so Grok uses the official `image_gen` instruction.
+- For pure video generation, prefer `/grok:imagine-video`.
+- Image/video generation may require SuperGrok; if Grok reports a tier restriction, surface that message as-is.
+
 Avoid:
 - Solving the problem yourself in the prompt.
 - Dumping huge unrelated context.
 - Asking Grok to "just look around" without a goal.
+- Rewriting the user's image description when the intent is Imagine — the official contract is verbatim.
 
 ## Do not
 
